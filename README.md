@@ -1,4 +1,3 @@
-# SiteSurvey
 # Site Survey Logger - Burp Suite Extension
 
 A Burp Suite extension to log and analyze web application flows, including screen transitions, parameters, and request/response details.
