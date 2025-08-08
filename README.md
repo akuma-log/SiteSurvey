@@ -21,13 +21,13 @@ A Burp Suite extension to log and analyze web application flows, including scree
 1. Download **Jython 2.7 Standalone** JAR from:  
    https://www.jython.org/download
 2. In Burp Suite, go to:  
-   `Extender` → `Options` → `Python Environment`  
+   `Extensions` → `Extensions Settings` → `Python Environment`  
    → Set path to the downloaded Jython JAR file
 
 ### Step 2: Load the Extension
 1. Download `sitesurvey.v2.py` from this repository
 2. In Burp Suite:  
-   `Extender` → `Extensions` → `Add`  
+   `Extensions` → `Add`  
    → Select `Python` as type → Choose the downloaded `.py` file
 
 ## Usage
@@ -47,7 +47,7 @@ A Burp Suite extension to log and analyze web application flows, including scree
 ## Troubleshooting
 - **Extension not loading?**  
   - Verify Jython is properly configured in Burp  
-  - Check Burp's `Extender` → `Errors` tab for debug info  
+  - Check Burp's `Extensions` → `Errors` tab for debug info  
 
 - **Missing requests?**  
   - Adjust scope rules via `Manage Scope` button  
