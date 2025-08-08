@@ -25,7 +25,7 @@ A Burp Suite extension to log and analyze web application flows, including scree
    → Set path to the downloaded Jython JAR file
 
 ### Step 2: Load the Extension
-1. Download `akuma.v2.0.py` from this repository
+1. Download `sitesurvey.v2.py` from this repository
 2. In Burp Suite:  
    `Extender` → `Extensions` → `Add`  
    → Select `Python` as type → Choose the downloaded `.py` file
