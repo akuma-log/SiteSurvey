@@ -175,8 +175,8 @@ class MessageEditorController(IMessageEditorController):
 class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditorController
     def __init__(self):
         self.requests = []
-        self._custom_scope_rules = []
-        self._scope_model = DefaultListModel()
+        #self._custom_scope_rules = []
+        #self._scope_model = DefaultListModel()
         self._include_extensions = []
         self._exclude_extensions = []
         self._title_map = {}
@@ -188,6 +188,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self._branch_counter = 1
         self._paused = False
         self._pending_requests = []
+        self.requests = []
+        self.target_domain = None  # ADD THIS LINE - simple target domain
 
         self._filter_presets = {
         "Basic Filter": {
@@ -218,16 +220,59 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         # Initialize UI components
         self._init_ui_components()
         
+        # ASK FOR TARGET DOMAIN ON STARTUP
+        self._ask_for_target_domain()
+        
         callbacks.addSuiteTab(self)
         print "[+] Site Survey Logger Loaded!"
 
-    def getRequest(self):
-        selected_rows = self.log_table.getSelectedRows()
-        if len(selected_rows) == 1:
-            model_row = self.log_table.convertRowIndexToModel(selected_rows[0])
-            if model_row < len(self.requests):
-                return self.requests[model_row]['messageInfo'].getRequest()
-        return None
+    def _ask_for_target_domain(self):
+        """Ask user for target domain on startup"""
+        target_domain = JOptionPane.showInputDialog(
+            None,
+            "Enter target domain (e.g. example.com):\n\nOnly traffic from this domain will be captured.",
+            "Set Target Domain", 
+            JOptionPane.QUESTION_MESSAGE
+        )
+        
+        if target_domain is not None and target_domain.strip():
+            self.target_domain = target_domain.strip().lower()
+            # Remove http:// or https:// if present
+            if self.target_domain.startswith('http://'):
+                self.target_domain = self.target_domain[7:]
+            if self.target_domain.startswith('https://'):
+                self.target_domain = self.target_domain[8:]
+            # Remove trailing slash
+            self.target_domain = self.target_domain.rstrip('/')
+            
+            JOptionPane.showMessageDialog(
+                None,
+                "Target set to: {}\n\nOnly capturing traffic from this domain.".format(self.target_domain),
+                "Target Configured",
+                JOptionPane.INFORMATION_MESSAGE
+            )
+            print "[+] Target domain set to: {}".format(self.target_domain)
+        else:
+            self.target_domain = None
+            JOptionPane.showMessageDialog(
+                None,
+                "No target set - capturing ALL traffic from Proxy.",
+                "No Target Set",
+                JOptionPane.WARNING_MESSAGE
+            )
+            print "[+] No target domain set - capturing ALL traffic"
+
+    def _is_in_scope(self, url):
+        """Simple scope check - only check domain"""
+        if not self.target_domain:
+            return True  # Capture everything if no target set
+        
+        try:
+            host = url.getHost().lower()
+            # Check if host matches target domain (including subdomains)
+            return host == self.target_domain or host.endswith('.' + self.target_domain)
+        except:
+            return False  # Exclude if URL parsing fails
 
     def getResponse(self):
         selected_rows = self.log_table.getSelectedRows()
@@ -735,14 +780,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         # First check if the URL is in scope
         url = messageInfo.getUrl()
-        
-        # DEBUG: Check scope rules and result
-        print "[SCOPE DEBUG] Custom scope rules:", self._custom_scope_rules
-        print "[SCOPE DEBUG] Scope check result:", self._check_custom_scope(url)
-        print "[SCOPE DEBUG] URL:", url.toString()
-        
         if not self._check_custom_scope(url):
-            print "[SCOPE FILTERED OUT]", url.toString()
             return
         
         if self._paused:
@@ -787,16 +825,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         
         self._update_status()
         self._update_display()
-
-        tool_names = {
-            4: "PROXY", 8: "SPIDER", 16: "SCANNER", 32: "INTRUDER",
-            64: "REPEATER", 128: "SEQUENCER", 256: "EXTENDER"
-        }
-        
-        url = messageInfo.getUrl()
-        tool_name = tool_names.get(toolFlag, "UNKNOWN")
-        
-        print "[TOOL: {}] URL: {}".format(tool_name, url.toString())
 
 
     def _get_parameters_count(self, analyzed_request):
@@ -990,166 +1018,48 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             print "[+] All requests and highlights cleared"
 
     def _check_custom_scope(self, url):
-        # If no scope rules defined, include everything
-        if not self._custom_scope_rules:
-            return True
-        
-        try:
-            url_str = url.toString()
-            protocol = url.getProtocol()
-            host = url.getHost()
-            port = url.getPort()
-            path = url.getPath() or "/"  # Ensure path is at least "/"
-            
-            # Handle default ports
-            if port == -1:
-                port = 443 if protocol == "https" else 80
-            
-            # Check each rule
-            for rule in self._custom_scope_rules:
-                rule_protocol, rule_host, rule_port, rule_path = rule
-                
-                # DEBUG: Print rule matching info
-                print "[Scope Debug] Checking: {}://{}:{}{} against rule: {}://{}:{}{}".format(
-                    protocol, host, port, path,
-                    rule_protocol or "any", rule_host or "any-host", rule_port or "any-port", rule_path or "any-path"
-                )
-                
-                # Protocol check
-                if rule_protocol and rule_protocol != protocol:
-                    continue
-                    
-                # Host check (supports wildcards like *.example.com)
-                if rule_host:
-                    if rule_host.startswith("*."):
-                        domain_to_match = rule_host[2:]  # Remove "*." part
-                        if not host.endswith(domain_to_match):
-                            continue
-                    elif rule_host.lower() != host.lower():
-                        continue
-                        
-                # Port check
-                if rule_port and rule_port != port:
-                    continue
-                    
-                # Path check - if rule_path is specified, check if path starts with it
-                if rule_path:
-                    # Ensure both paths start with /
-                    rule_path = rule_path if rule_path.startswith("/") else "/" + rule_path
-                    current_path = path if path.startswith("/") else "/" + path
-                    
-                    # Check if the current path starts with the rule path
-                    if not current_path.startswith(rule_path):
-                        continue
-                        
-                # If we get here, all specified rule components matched
-                print "[Scope Debug] MATCHED: {}://{}:{}{}".format(protocol, host, port, path)
-                return True
-            
-            # No rules matched
-            print "[Scope Debug] NO MATCH: {}://{}:{}{}".format(protocol, host, port, path)
-            return False
-            
-        except Exception as e:
-            # If URL parsing fails, be safe and exclude it
-            print "[-] Error checking scope for URL: {} - {}".format(url.toString(), str(e))
-            return False
+        return self._is_in_scope(url)
     
     def _show_scope_dialog(self, event):
-        dialog = JDialog()
-        dialog.setTitle("Manage Scope Rules")
-        dialog.setSize(500, 400)
-        dialog.setLayout(BorderLayout())
-        dialog.setModal(True)
-
-        # Current Rules List
-        rules_list = JList(self._scope_model)
-        scroll_pane = JScrollPane(rules_list)
-
-        # Input Panel
-        input_panel = JPanel(GridLayout(4, 2, 5, 5))
+        """Simple scope management dialog"""
+        current_target = self.target_domain if self.target_domain else "ALL TRAFFIC"
         
-        # Protocol
-        input_panel.add(JLabel("Protocol:"))
-        protocol_combo = JComboBox(["http", "https", "Any"])
-        input_panel.add(protocol_combo)
+        new_target = JOptionPane.showInputDialog(
+            None,
+            "Current target: {}\n\nEnter target domain (e.g. example.com):\nLeave empty to capture ALL traffic:".format(current_target),
+            "Manage Target Domain", 
+            JOptionPane.QUESTION_MESSAGE,
+            None,
+            None,
+            self.target_domain if self.target_domain else ""
+        )
         
-        # Host (supports wildcards like *.example.com)
-        input_panel.add(JLabel("Host (e.g. example.com or *.example.com):"))
-        host_field = JTextField()
-        input_panel.add(host_field)
-        
-        # Port
-        input_panel.add(JLabel("Port (optional):"))
-        port_field = JTextField()
-        input_panel.add(port_field)
-        
-        # Path
-        input_panel.add(JLabel("Path (e.g. /api):"))
-        path_field = JTextField()
-        input_panel.add(path_field)
-
-        # Button Panel
-        button_panel = JPanel(FlowLayout(FlowLayout.CENTER))
-        
-        def add_rule(e):
-            protocol = str(protocol_combo.getSelectedItem())
-            host = host_field.getText().strip()
-            port = port_field.getText().strip()
-            path = path_field.getText().strip()
-            
-            if not any([host, port, path]):
-                JOptionPane.showMessageDialog(dialog, 
-                    "At least one field (Host, Port, or Path) must be specified", 
-                    "Error", 
-                    JOptionPane.ERROR_MESSAGE)
-                return
+        if new_target is not None:
+            if new_target.strip():
+                self.target_domain = new_target.strip().lower()
+                # Clean the domain
+                if self.target_domain.startswith('http://'):
+                    self.target_domain = self.target_domain[7:]
+                if self.target_domain.startswith('https://'):
+                    self.target_domain = self.target_domain[8:]
+                self.target_domain = self.target_domain.rstrip('/')
                 
-            # Add the new rule
-            rule = (
-                protocol if protocol != "Any" else None,
-                host.lower() if host else None,
-                int(port) if port else None,
-                path if path else None
+                status_msg = "Target set to: {}".format(self.target_domain)
+                print "[+] {}".format(status_msg)
+            else:
+                self.target_domain = None
+                status_msg = "Target cleared - capturing ALL traffic"
+                print "[+] {}".format(status_msg)
+            
+            # Refresh display to apply new scope
+            self._update_display()
+            
+            JOptionPane.showMessageDialog(
+                None,
+                status_msg,
+                "Target Updated",
+                JOptionPane.INFORMATION_MESSAGE
             )
-            self._custom_scope_rules.append(rule)
-            
-            # Display in readable format
-            display_text = "%s://%s:%s%s" % (
-                rule[0] or "any",
-                rule[1] or "any-host",
-                rule[2] or "any-port", 
-                rule[3] or "/*"
-            )
-            self._scope_model.addElement(display_text)
-            
-            # Clear fields
-            host_field.setText("")
-            port_field.setText("")
-            path_field.setText("")
-            
-            # Apply scope to existing requests
-            self._apply_scope_filter()  # <-- Add this line
-
-        add_btn = JButton("Add Rule", actionPerformed=add_rule)
-        button_panel.add(add_btn)
-        
-        remove_btn = JButton("Remove Selected", 
-            actionPerformed=lambda e: self._remove_scope_rule(rules_list))
-        button_panel.add(remove_btn)
-
-        # Main Layout
-        main_panel = JPanel(BorderLayout())
-        main_panel.add(scroll_pane, BorderLayout.CENTER)
-        
-        bottom_panel = JPanel(BorderLayout())
-        bottom_panel.add(input_panel, BorderLayout.NORTH)
-        bottom_panel.add(button_panel, BorderLayout.SOUTH)
-        
-        dialog.add(main_panel, BorderLayout.CENTER)
-        dialog.add(bottom_panel, BorderLayout.SOUTH)
-        dialog.setLocationRelativeTo(None)
-        dialog.setVisible(True)
 
     def _apply_scope_filter(self):
         """Filter existing requests based on current scope rules"""

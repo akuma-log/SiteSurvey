@@ -735,14 +735,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         # First check if the URL is in scope
         url = messageInfo.getUrl()
-        
-        # DEBUG: Check scope rules and result
-        print "[SCOPE DEBUG] Custom scope rules:", self._custom_scope_rules
-        print "[SCOPE DEBUG] Scope check result:", self._check_custom_scope(url)
-        print "[SCOPE DEBUG] URL:", url.toString()
-        
         if not self._check_custom_scope(url):
-            print "[SCOPE FILTERED OUT]", url.toString()
             return
         
         if self._paused:
@@ -787,16 +780,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         
         self._update_status()
         self._update_display()
-
-        tool_names = {
-            4: "PROXY", 8: "SPIDER", 16: "SCANNER", 32: "INTRUDER",
-            64: "REPEATER", 128: "SEQUENCER", 256: "EXTENDER"
-        }
-        
-        url = messageInfo.getUrl()
-        tool_name = tool_names.get(toolFlag, "UNKNOWN")
-        
-        print "[TOOL: {}] URL: {}".format(tool_name, url.toString())
 
 
     def _get_parameters_count(self, analyzed_request):
@@ -994,66 +977,53 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if not self._custom_scope_rules:
             return True
         
-        try:
-            url_str = url.toString()
-            protocol = url.getProtocol()
-            host = url.getHost()
-            port = url.getPort()
-            path = url.getPath() or "/"  # Ensure path is at least "/"
+        url_str = url.toString()
+        protocol = url.getProtocol()
+        host = url.getHost()
+        port = url.getPort()
+        path = url.getPath() or "/"  # Ensure path is at least "/"
+        
+        # Handle default ports
+        if port == -1:
+            port = 443 if protocol == "https" else 80
+        
+        # Check each rule
+        for rule in self._custom_scope_rules:
+            rule_protocol, rule_host, rule_port, rule_path = rule
             
-            # Handle default ports
-            if port == -1:
-                port = 443 if protocol == "https" else 80
-            
-            # Check each rule
-            for rule in self._custom_scope_rules:
-                rule_protocol, rule_host, rule_port, rule_path = rule
+            # Protocol check
+            if rule_protocol and rule_protocol != protocol:
+                continue
                 
-                # DEBUG: Print rule matching info
-                print "[Scope Debug] Checking: {}://{}:{}{} against rule: {}://{}:{}{}".format(
-                    protocol, host, port, path,
-                    rule_protocol or "any", rule_host or "any-host", rule_port or "any-port", rule_path or "any-path"
-                )
-                
-                # Protocol check
-                if rule_protocol and rule_protocol != protocol:
+            # Host check (supports wildcards like *.example.com)
+            if rule_host:
+                if rule_host.startswith("*."):
+                    if not host.endswith(rule_host[1:]):
+                        continue
+                elif rule_host.lower() != host.lower():
                     continue
                     
-                # Host check (supports wildcards like *.example.com)
-                if rule_host:
-                    if rule_host.startswith("*."):
-                        domain_to_match = rule_host[2:]  # Remove "*." part
-                        if not host.endswith(domain_to_match):
-                            continue
-                    elif rule_host.lower() != host.lower():
-                        continue
-                        
-                # Port check
-                if rule_port and rule_port != port:
+            # Port check
+            if rule_port and rule_port != port:
+                continue
+                
+            # Path check - if rule_path is specified, check if path starts with it
+            if rule_path:
+                # Ensure both paths start with /
+                rule_path = rule_path if rule_path.startswith("/") else "/" + rule_path
+                current_path = path if path.startswith("/") else "/" + path
+                
+                # Check if the current path starts with the rule path
+                if not current_path.startswith(rule_path):
                     continue
+            # If no path specified in rule, include ALL paths for this host
+            # (This is the key fix - if no path rule, don't skip the request)
                     
-                # Path check - if rule_path is specified, check if path starts with it
-                if rule_path:
-                    # Ensure both paths start with /
-                    rule_path = rule_path if rule_path.startswith("/") else "/" + rule_path
-                    current_path = path if path.startswith("/") else "/" + path
-                    
-                    # Check if the current path starts with the rule path
-                    if not current_path.startswith(rule_path):
-                        continue
-                        
-                # If we get here, all specified rule components matched
-                print "[Scope Debug] MATCHED: {}://{}:{}{}".format(protocol, host, port, path)
-                return True
-            
-            # No rules matched
-            print "[Scope Debug] NO MATCH: {}://{}:{}{}".format(protocol, host, port, path)
-            return False
-            
-        except Exception as e:
-            # If URL parsing fails, be safe and exclude it
-            print "[-] Error checking scope for URL: {} - {}".format(url.toString(), str(e))
-            return False
+            # If we get here, all specified rule components matched
+            return True
+        
+        # No rules matched
+        return False
     
     def _show_scope_dialog(self, event):
         dialog = JDialog()
@@ -1116,9 +1086,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             
             # Display in readable format
             display_text = "%s://%s:%s%s" % (
-                rule[0] or "any",
-                rule[1] or "any-host",
-                rule[2] or "any-port", 
+                rule[0] or "*",
+                rule[1] or "*",
+                rule[2] or "*",
                 rule[3] or "/*"
             )
             self._scope_model.addElement(display_text)
