@@ -51,7 +51,11 @@ A Burp Suite extension to log and analyze web application flows, including scree
 
 - **Missing requests?**  
   - Adjust scope rules via `Manage Scope` button  
-  - Disable filters if needed  
+  - Disable filters if needed
+ 
+#### Disable Browser Cache for better performance
+   - you can disable the cache in Firefox by going to `about:config` and setting `network.http.use-cache` to false, but this can negatively impact performance. A better alternative for most users is to use a keyboard shortcut to bypass the cache when needed, such as `Shift + Click` the Reload button or `Ctrl+F5`, which forces a fresh download for that specific page without permanently disabling caching. For permanent disabling, you can set `network.http.use-cache` to false in `about:config`, or clear the cache automatically when you close Firefox in the settings. 
+
 
 ## License
 MIT License - See [LICENSE](LICENSE) file.
