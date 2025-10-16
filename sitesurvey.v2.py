@@ -17,6 +17,11 @@ from javax.swing import ListSelectionModel  # Add with other imports
 from javax.swing import JCheckBox  # Add this with your other imports
 from javax.swing import JSplitPane
 from burp import IMessageEditor
+from javax.swing import JButton, AbstractCellEditor
+from java.awt.event import ActionListener, MouseAdapter
+from java.awt import Cursor
+from burp import IBurpExtender, IHttpListener, ITab, IMessageEditorController
+from javax.swing import Timer
 
 
 HIGHLIGHT_COLORS = {
@@ -32,6 +37,7 @@ class HighlightRenderer(DefaultTableCellRenderer):
         self.highlight_colors = {}  # Stores {request_number: color}
         self.dark_bg = Color(50, 50, 50)
         self.light_bg = Color.WHITE
+        
         
     def getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column):
         component = DefaultTableCellRenderer.getTableCellRendererComponent(self, table, value, isSelected, hasFocus, row, column)
@@ -114,6 +120,78 @@ class HighlightRenderer(DefaultTableCellRenderer):
         self.highlight_colors = new_highlights
     
 
+class CopyButtonMouseListener(MouseAdapter):
+    def __init__(self, extender):
+        self.extender = extender
+        self.timer = None
+        
+    def mouseMoved(self, event):
+        table = event.getSource()
+        point = event.getPoint()
+        row = table.rowAtPoint(point)
+        column = table.columnAtPoint(point)
+        
+        # Show hand cursor only on Transition URL column
+        if column == 5 and row >= 0:
+            table.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR))
+        else:
+            table.setCursor(Cursor.getDefaultCursor())
+            
+    def mouseClicked(self, event):
+        table = event.getSource()
+        point = event.getPoint()
+        row = table.rowAtPoint(point)
+        column = table.columnAtPoint(point)
+        
+        # Handle click on Transition URL column
+        if column == 5 and row >= 0:
+            model_row = table.convertRowIndexToModel(row)
+            if (hasattr(self.extender, '_display_to_request_map') and 
+                model_row < len(self.extender._display_to_request_map)):
+                
+                actual_index = self.extender._display_to_request_map[model_row]
+                if actual_index < len(self.extender.requests):
+                    req_data = self.extender.requests[actual_index]
+                    url = req_data.get('transition_url', '')
+                    if url:
+                        from java.awt import Toolkit
+                        from java.awt.datatransfer import StringSelection
+                        toolkit = Toolkit.getDefaultToolkit()
+                        clipboard = toolkit.getSystemClipboard()
+                        clipboard.setContents(StringSelection(url), None)
+                        
+                        # Show brief popup message
+                        self._show_brief_popup(table, point, "Copied!")
+    
+    def _show_brief_popup(self, component, point, message):
+        # Create a small popup label
+        popup = JPopupMenu()
+        popup.setBorder(None)
+        
+        label = JLabel(message)
+        label.setForeground(Color.WHITE)
+        label.setBackground(Color(70, 130, 180))  # Steel blue color
+        label.setOpaque(True)
+        label.setBorder(JPopupMenu().getBorder())
+        popup.add(label)
+        
+        # Show popup near the click position
+        popup.show(component, point.x + 10, point.y - 25)
+        
+        # Auto-close after 1 second
+        if self.timer and self.timer.isRunning():
+            self.timer.stop()
+            
+        class PopupCloser(ActionListener):
+            def __init__(self, popup):
+                self.popup = popup
+            def actionPerformed(self, e):
+                self.popup.setVisible(False)
+                
+        self.timer = Timer(1000, PopupCloser(popup))  # 1000ms = 1 second
+        self.timer.setRepeats(False)
+        self.timer.start()
+
 
 class TableMouseListener(MouseAdapter):
     def __init__(self, extender):
@@ -188,6 +266,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self._branch_counter = 1
         self._paused = False
         self._pending_requests = []
+        self._exclude_directories = []  # List of directory paths to exclude
+        self._include_directories = []  # List of directory paths to include only
+        self._hide_duplicates = False
 
         self._filter_presets = {
         "Basic Filter": {
@@ -219,7 +300,28 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self._init_ui_components()
         
         callbacks.addSuiteTab(self)
-        print "[+] Site Survey Logger Loaded!"
+
+
+    def _make_selection_more_visible(self):
+        """Make selection more visible like traditional Burp"""
+        # Set selection colors to be more prominent
+        self.log_table.setSelectionBackground(Color(64, 114, 196))  # Bright blue
+        self.log_table.setSelectionForeground(Color.WHITE)
+        
+        # Make selection persist through updates
+        self.log_table.putClientProperty("JTable.autoStartsEdit", False)
+
+    def _setup_persistent_selection(self):
+        """Make selection behavior more like traditional Burp"""
+        # Use a more persistent selection model
+        self.log_table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
+        
+        # Make selection more visible
+        self.log_table.setSelectionBackground(Color(64, 114, 196))
+        self.log_table.setSelectionForeground(Color.WHITE)
+        
+        # Don't clear selection on focus loss
+        self.log_table.setFocusable(True)
 
     def getRequest(self):
         selected_rows = self.log_table.getSelectedRows()
@@ -246,6 +348,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 return self.requests[model_row]['messageInfo'].getHttpService()
         return None
 
+
     def _init_ui_components(self):
         self.log_panel = JPanel(BorderLayout())
         
@@ -261,17 +364,41 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self.highlight_renderer = HighlightRenderer()
         self.log_table.setDefaultRenderer(Object, self.highlight_renderer)
         
+        # SET COLUMN WIDTHS
+        column_model = self.log_table.getColumnModel()
+        
+        # Set preferred widths for each column
+        column_model.getColumn(0).setPreferredWidth(40)   # No. - Small
+        column_model.getColumn(1).setPreferredWidth(100)  # Screen Name - Medium
+        column_model.getColumn(2).setPreferredWidth(150)  # Screen URL - Medium
+        column_model.getColumn(3).setPreferredWidth(100)  # Button Name - Medium
+        column_model.getColumn(4).setPreferredWidth(60)   # Method - Small
+        column_model.getColumn(5).setPreferredWidth(350)  # Transition URL - Larger
+        column_model.getColumn(6).setPreferredWidth(60)   # Params - Small
+        column_model.getColumn(7).setPreferredWidth(80)   # Status - Small
+        column_model.getColumn(8).setPreferredWidth(60)   # Length - Small
+        
+        # Make the table auto-resize to fit the container
+        self.log_table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS)
+        
+        # ADD COPY FUNCTIONALITY TO TRANSITION URL COLUMN
+        copy_mouse_listener = CopyButtonMouseListener(self)
+        self.log_table.addMouseMotionListener(copy_mouse_listener)
+        self.log_table.addMouseListener(copy_mouse_listener)
+        
         # Set Burp Suite style selection colors
         self.log_table.setShowGrid(True)
         self.log_table.setGridColor(Color.LIGHT_GRAY)
         self.log_table.setSelectionBackground(Color(64, 114, 196))
         self.log_table.setSelectionForeground(Color.WHITE)
         self.log_table.setSelectionMode(ListSelectionModel.MULTIPLE_INTERVAL_SELECTION)
-        
+            
         # Initialize control buttons
         self._setup_control_buttons()
-        
-        # Create the message editor controller
+        self._make_selection_more_visible()
+        self._setup_persistent_selection()
+
+        # Rest of your existing code...
         self._message_controller = MessageEditorController(self)
         
         # Simple message viewers (remove any tabbed pane code)
@@ -305,19 +432,89 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             
         selected_rows = self.log_table.getSelectedRows()
         if len(selected_rows) == 1:
+            # Convert visual row index to model row index
             model_row = self.log_table.convertRowIndexToModel(selected_rows[0])
-            if model_row < len(self.requests):
-                request_data = self.requests[model_row]
+            
+            # Use the mapping to get the actual request index
+            if (hasattr(self, '_display_to_request_map') and 
+                model_row < len(self._display_to_request_map)):
                 
-                # Set request (isRequest=True)
-                self._request_viewer.setMessage(
-                    request_data['messageInfo'].getRequest(), 
-                    True
-                )
+                actual_request_index = self._display_to_request_map[model_row]
                 
-                # Set response (isRequest=False) - FIXED
-                response = request_data['messageInfo'].getResponse()
-                self._response_viewer.setMessage(response, False)
+                if actual_request_index < len(self.requests):
+                    request_data = self.requests[actual_request_index]
+                    
+                    # Set request (isRequest=True)
+                    request_bytes = request_data['messageInfo'].getRequest()
+                    if request_bytes:
+                        self._request_viewer.setMessage(request_bytes, True)
+                    else:
+                        # Create empty byte array instead of None
+                        self._request_viewer.setMessage(bytearray(), True)
+                    
+                    # Set response (isRequest=False)
+                    response = request_data['messageInfo'].getResponse()
+                    if response:
+                        self._response_viewer.setMessage(response, False)
+                    else:
+                        # Create empty byte array instead of None
+                        self._response_viewer.setMessage(bytearray(), False)
+                else:
+                    # Clear with empty byte arrays instead of None
+                    self._request_viewer.setMessage(bytearray(), True)
+                    self._response_viewer.setMessage(bytearray(), False)
+            else:
+                # Clear with empty byte arrays instead of None
+                self._request_viewer.setMessage(bytearray(), True)
+                self._response_viewer.setMessage(bytearray(), False)
+        else:
+            # Clear when no row or multiple rows are selected with empty byte arrays
+            self._request_viewer.setMessage(bytearray(), True)
+            self._response_viewer.setMessage(bytearray(), False)
+
+    def _save_table_edits(self):
+        """Save user edits from the table back to the requests data"""
+        if not hasattr(self, '_display_to_request_map'):
+            return
+            
+        for row in range(self.log_model.getRowCount()):
+            if row < len(self._display_to_request_map):
+                actual_index = self._display_to_request_map[row]
+                if actual_index < len(self.requests):
+                    # Get values from table model
+                    screen_name = self.log_model.getValueAt(row, 1)  # Column 1: Screen Name
+                    screen_url = self.log_model.getValueAt(row, 2)   # Column 2: Screen URL  
+                    button_name = self.log_model.getValueAt(row, 3)  # Column 3: Button Name
+                    
+                    # Save to actual request data
+                    if screen_name is not None:
+                        self.requests[actual_index]['screen_name'] = str(screen_name)
+                    if screen_url is not None:
+                        self.requests[actual_index]['screen_url'] = str(screen_url)
+                    if button_name is not None:
+                        self.requests[actual_index]['button_name'] = str(button_name)
+
+
+    def _refresh_display(self, event=None):
+        """Force refresh the display to sync with actual data"""
+        
+        # SAVE USER EDITS BEFORE REFRESHING
+        self._save_table_edits()
+        
+        # Force update the display
+        self._update_display()
+        self._update_status()
+        
+        # Show confirmation
+        visible_count = self.log_model.getRowCount()
+        total_count = len(self.requests)
+        
+        if visible_count == 0 and total_count > 0:
+            self.status_label.setText("Refreshed: {} total requests ({} filtered out)".format(
+                total_count, total_count - visible_count))
+        else:
+            self.status_label.setText("Refreshed: {} requests displayed".format(visible_count))
+
 
     def _setup_context_menu(self):
         self.popup_menu = JPopupMenu()
@@ -403,12 +600,62 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self.export_button = JButton("Export to Excel", actionPerformed=self._export_to_excel)
         self.clear_button = JButton("Clear All", actionPerformed=self._confirm_clear)
         self.pause_button = JButton("Pause Logging", actionPerformed=self._toggle_pause)
+        self.duplicate_button = JButton("Hide Duplicates", actionPerformed=self._toggle_duplicates)
+        self.refresh_button = JButton("Refresh Display", actionPerformed=self._refresh_display)
+        self.status_label = JLabel("Ready. 0 requests captured")
+        
+        # ADD REFRESH BUTTON
+        self.refresh_button = JButton("Refresh Display", actionPerformed=self._refresh_display)
+        
         self.status_label = JLabel("Ready. 0 requests captured")
 
+    def _toggle_duplicates(self, event):
+        """Toggle between hiding and showing duplicate requests"""
+        self._hide_duplicates = not self._hide_duplicates
+        
+        if self._hide_duplicates:
+            self.duplicate_button.setText("Show Duplicates")
+            self.duplicate_button.setBackground(Color(100, 200, 100))  # Green when active
+            self.duplicate_button.setForeground(Color.WHITE)
+        else:
+            self.duplicate_button.setText("Hide Duplicates") 
+            self.duplicate_button.setBackground(None)  # Default color
+            self.duplicate_button.setForeground(None)
+        
+        # Update the display to apply the filter
+        self._update_display()
+        
+        # Show brief status message
+        if self._hide_duplicates:
+            self.status_label.setText("Hiding duplicate requests")
+        else:
+            self.status_label.setText("Showing all requests (including duplicates)")
+
+
     def _export_to_excel(self, event):
-        if not self.requests:
+        # First, filter requests using the same logic as _update_display
+        filtered_requests = []
+        
+        for req in self.requests:
+            # Check scope
+            try:
+                url = req['messageInfo'].getUrl()
+                if not self._check_custom_scope(url):
+                    continue  # Skip if not in scope
+            except:
+                # If URL can't be parsed, skip this request
+                continue
+                
+            # Check file extension filters
+            if not self._should_display(req):
+                continue  # Skip if filtered by extension
+                
+            # If we get here, the request passed both filters
+            filtered_requests.append(req)
+        
+        if not filtered_requests:
             JOptionPane.showMessageDialog(None,
-                "No data to export",
+                "No filtered data to export",
                 "Export Failed",
                 JOptionPane.WARNING_MESSAGE)
             return
@@ -440,22 +687,16 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     ]
                     writer.writerow(headers)
                     
-                    # Write data
-                    for req in self.requests:
-                        writer.writerow([
-                            req['number'],
-                            req.get('screen_name', ''),
-                            req['screen_url'],
-                            req.get('button_name', ''),
-                            req['method'],
-                            req.get('transition_url', ''),
-                            req.get('params', 0),
-                            req.get('status', ''),
-                            req.get('length', 0)
-                        ])
+                    # Export data from the TABLE MODEL (includes user edits)
+                    for row in range(self.log_model.getRowCount()):
+                        row_data = []
+                        for col in range(self.log_model.getColumnCount()):
+                            value = self.log_model.getValueAt(row, col)
+                            row_data.append(str(value) if value is not None else "")
+                        writer.writerow(row_data)
                 
                 JOptionPane.showMessageDialog(None,
-                    "Exported {} requests to:\n{}".format(len(self.requests), file_path),
+                    "Exported {} filtered requests to:\n{}".format(self.log_model.getRowCount(), file_path),
                     "Export Successful",
                     JOptionPane.INFORMATION_MESSAGE)
                     
@@ -466,10 +707,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     JOptionPane.ERROR_MESSAGE)
 
 
-
     def _delete_selected(self, event=None):
-        selected_rows = sorted([self.log_table.convertRowIndexToModel(i) 
-                            for i in self.log_table.getSelectedRows()], reverse=True)
+        selected_rows = [self.log_table.convertRowIndexToModel(i) 
+                        for i in self.log_table.getSelectedRows()]
         if not selected_rows:
             return
 
@@ -480,28 +720,65 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             JOptionPane.YES_NO_OPTION)
         
         if confirm == JOptionPane.YES_OPTION:
-            # Delete by row index (since table rows align with requests list)
-            # Build new requests list excluding selected rows
+            
+            # Get the actual request indices using the mapping
+            actual_indices_to_delete = []
+            for row in selected_rows:
+                if (hasattr(self, '_display_to_request_map') and 
+                    row < len(self._display_to_request_map)):
+                    actual_index = self._display_to_request_map[row]
+                    actual_indices_to_delete.append(actual_index)
+            
+            if not actual_indices_to_delete:
+                JOptionPane.showMessageDialog(None,
+                    "No valid requests to delete",
+                    "Delete Failed",
+                    JOptionPane.WARNING_MESSAGE)
+                return
+            
+            # Sort in reverse order for safe deletion
+            actual_indices_to_delete.sort(reverse=True)
+            
+            # Save user edits BEFORE deletion
+            self._save_table_edits()
+            
+            # Delete from self.requests using actual indices
             new_requests = []
             old_to_new_map = {}
             new_number = 1
             
+            deleted_count = 0
             for i, req in enumerate(self.requests):
-                if i not in selected_rows:  # Use index, not display number
+                if i not in actual_indices_to_delete:
                     old_number = req['number']
                     req['number'] = new_number
                     old_to_new_map[old_number] = new_number
                     new_requests.append(req)
                     new_number += 1
+                else:
+                    deleted_count += 1
             
             self.requests = new_requests
             
             # Migrate highlights
             self.highlight_renderer.migrateHighlights(old_to_new_map)
             
-            # Update display
+            # Update display and status WITHOUT going blank
             self._update_display()
             self._update_status()
+            
+            # Clear viewers with empty byte arrays instead of None
+            self._request_viewer.setMessage(bytearray(), True)
+            self._response_viewer.setMessage(bytearray(), False)
+            
+            # Show success message
+            JOptionPane.showMessageDialog(
+                None,
+                "Successfully deleted {} requests".format(deleted_count),
+                "Delete Successful",
+                JOptionPane.INFORMATION_MESSAGE
+            )
+
 
     def _toggle_highlight(self, event=None):
         selected_rows = [self.log_table.convertRowIndexToModel(i) 
@@ -552,38 +829,48 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         # Get the first selected request
         row = selected_rows[0]
         
-        # DIRECTLY use the row index to get the request from self.requests
-        if row < len(self.requests):
-            req_data = self.requests[row]
+        # Use the display-to-request mapping to get the actual request
+        if (hasattr(self, '_display_to_request_map') and 
+            row < len(self._display_to_request_map)):
             
-            try:
-                message_info = req_data['messageInfo']
+            actual_request_index = self._display_to_request_map[row]
+            
+            if actual_request_index < len(self.requests):
+                req_data = self.requests[actual_request_index]
                 
-                # Send to Repeater using the actual messageInfo
-                self._callbacks.sendToRepeater(
-                    message_info.getHttpService().getHost(),
-                    message_info.getHttpService().getPort(),
-                    message_info.getHttpService().getProtocol() == "https",
-                    message_info.getRequest(),
-                    "SiteSurvey Request #{}".format(req_data['number'])
-                )
-                
-                # Switch to Repeater tab
                 try:
-                    self._callbacks.activateBurpTab("Repeater")
-                except:
-                    pass
+                    message_info = req_data['messageInfo']
                     
-                JOptionPane.showMessageDialog(None,
-                    "Request #{} sent to Repeater tab".format(req_data['number']),
-                    "Send to Repeater",
-                    JOptionPane.INFORMATION_MESSAGE)
+                    # Send to Repeater using the actual messageInfo
+                    self._callbacks.sendToRepeater(
+                        message_info.getHttpService().getHost(),
+                        message_info.getHttpService().getPort(),
+                        message_info.getHttpService().getProtocol() == "https",
+                        message_info.getRequest(),
+                        "SiteSurvey Request #{}".format(req_data['number'])
+                    )
                     
-            except Exception as e:
-                JOptionPane.showMessageDialog(None,
-                    "Error sending to Repeater: {}".format(str(e)),
-                    "Error",
-                    JOptionPane.ERROR_MESSAGE)
+                    # Switch to Repeater tab
+                    try:
+                        self._callbacks.activateBurpTab("Repeater")
+                    except:
+                        pass
+                        
+                    JOptionPane.showMessageDialog(None,
+                        "Request #{} sent to Repeater tab".format(req_data['number']),
+                        "Send to Repeater",
+                        JOptionPane.INFORMATION_MESSAGE)
+                        
+                except Exception as e:
+                    JOptionPane.showMessageDialog(None,
+                        "Error sending to Repeater: {}".format(str(e)),
+                        "Error",
+                        JOptionPane.ERROR_MESSAGE)
+        else:
+            JOptionPane.showMessageDialog(None,
+                "Could not find the selected request",
+                "Error",
+                JOptionPane.ERROR_MESSAGE)
 
     def _copy_selected(self, event=None):
         selected_rows = [self.log_table.convertRowIndexToModel(i) 
@@ -638,68 +925,202 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 req['branch_number'] = i
 
     def _update_display(self):
-        # Store current highlights before clearing
-        current_highlights = self.highlight_renderer.highlight_colors.copy()
-        
-        self.log_model.setRowCount(0)
-        
-        # Track seen URLs AND methods to detect duplicates
-        seen_requests = {}  # key: (url, method) -> first occurrence number
-        display_counter = 1  # Counter for sequential display numbers
-        
-        for req in self.requests:
-            # First check scope
-            try:
-                url = req['messageInfo'].getUrl()
-                if not self._check_custom_scope(url):
-                    continue  # Skip if not in scope
-            except:
-                # If URL can't be parsed, skip this request
-                continue
+        try:
+            # Store current selection by REQUEST NUMBER (not index)
+            selected_request_numbers = set()
+            
+            # Store current scroll position
+            scroll_position = None
+            selected_row_rect = None
+            
+            if hasattr(self, '_display_to_request_map') and self.log_table.getRowCount() > 0:
+                # Store selected rows by their request number (the value in column 0)
+                for view_row in self.log_table.getSelectedRows():
+                    model_row = self.log_table.convertRowIndexToModel(view_row)
+                    if model_row < self.log_model.getRowCount():
+                        request_number_value = self.log_model.getValueAt(model_row, 0)
+                        if request_number_value:
+                            # Extract the actual number (handle asterisks for duplicates)
+                            try:
+                                if isinstance(request_number_value, str):
+                                    clean_value = request_number_value.replace('*', '').strip()
+                                    if clean_value.isdigit():
+                                        selected_request_numbers.add(int(clean_value))
+                                else:
+                                    selected_request_numbers.add(int(request_number_value))
+                            except:
+                                pass
                 
-            # Then check file extension filters
-            if not self._should_display(req):
-                continue  # Skip if filtered by extension
+                # Store the scroll position based on the FIRST selected row
+                if selected_request_numbers:
+                    for view_row in range(self.log_table.getRowCount()):
+                        model_row = self.log_table.convertRowIndexToModel(view_row)
+                        if model_row < self.log_model.getRowCount():
+                            request_number_value = self.log_model.getValueAt(model_row, 0)
+                            if request_number_value:
+                                try:
+                                    if isinstance(request_number_value, str):
+                                        clean_value = request_number_value.replace('*', '').strip()
+                                        if clean_value.isdigit() and int(clean_value) in selected_request_numbers:
+                                            selected_row_rect = self.log_table.getCellRect(view_row, 0, False)
+                                            scroll_position = self.log_table.getVisibleRect()
+                                            break
+                                except:
+                                    pass
+            
+            # Store current highlights
+            current_highlights = self.highlight_renderer.highlight_colors.copy()
+            
+            # Save user edits BEFORE updating display
+            self._save_table_edits()
+            
+            # DON'T clear the table completely - update rows intelligently
+            current_row_count = self.log_model.getRowCount()
+            
+            # Track seen URLs AND methods to detect duplicates
+            seen_requests = {}
+            display_counter = 1
+            
+            # Create new mapping between display rows and actual request indices
+            new_display_to_request_map = []
+            
+            # Build list of requests that should be displayed
+            display_requests = []
+            seen_requests_set = set()
+
+            for req_index, req in enumerate(self.requests):
+                # Check scope
+                try:
+                    url = req['messageInfo'].getUrl()
+                    if not self._check_custom_scope(url):
+                        continue
+                except:
+                    continue
+                    
+                # Check file extension filters
+                if not self._should_display(req):
+                    continue
+                if self._hide_duplicates:
+                    actual_url = req['messageInfo'].getUrl().toString()
+                    method = req['method']
+                    request_key = (actual_url, method)
+                    
+                    if request_key in seen_requests_set:
+                        continue  # Skip this duplicate request
+                    else:
+                        seen_requests_set.add(request_key)
+
+                display_requests.append((req_index, req))
+            
+            # Track seen URLs AND methods to detect duplicates (for asterisk marking)
+            seen_requests = {}
+            display_counter = 1
+
+            # Create new mapping between display rows and actual request indices
+            new_display_to_request_map = []
+
+
+            # Update table rows - only modify what changed
+            displayed_count = 0
+            
+            for req_index, req in display_requests:
+                # Check for duplicates (for visual marking with asterisk)
+                actual_url = req['messageInfo'].getUrl().toString()
+                method = req['method']
+                request_key = (actual_url, method)
                 
-            # If we get here, the request passed both filters
-            # Check for duplicate requests (same actual URL AND same method)
-            actual_url = req['messageInfo'].getUrl().toString()
-            method = req['method']
-            request_key = (actual_url, method)
+                display_number = display_counter
+                display_counter += 1
+                
+                # Only mark with asterisk if we're showing duplicates
+                if not self._hide_duplicates and request_key in seen_requests:
+                    first_occurrence = seen_requests[request_key]
+                    display_number = "{}*".format(first_occurrence)
+                else:
+                    seen_requests[request_key] = display_number
+                
+                new_display_to_request_map.append(req_index)
+                
+                # Prepare row data
+                status = str(req.get('status', "Pending"))
+                if status.isdigit():
+                    status_code = int(status)
+                    if 200 <= status_code < 300:
+                        status = "%s (OK)" % status_code
+                    elif status_code >= 400:
+                        status = "%s (Error)" % status_code
+                
+                row_data = [
+                    display_number,
+                    req.get('screen_name', ""),
+                    req.get('screen_url', ""),
+                    req.get('button_name', ""),
+                    method,
+                    req.get('transition_url', ""),
+                    req.get('params', 0),
+                    status,
+                    req.get('length', 0)
+                ]
+                
+                # Update or add row
+                if displayed_count < current_row_count:
+                    # Update existing row
+                    for col, value in enumerate(row_data):
+                        self.log_model.setValueAt(value, displayed_count, col)
+                else:
+                    # Add new row
+                    self.log_model.addRow(row_data)
+                
+                displayed_count += 1
             
-            display_number = display_counter
-            display_counter += 1
+            # Remove extra rows if we have fewer displayed requests than before
+            while self.log_model.getRowCount() > displayed_count:
+                self.log_model.removeRow(self.log_model.getRowCount() - 1)
             
-            if request_key in seen_requests:
-                first_occurrence = seen_requests[request_key]
-                display_number = "{}*".format(first_occurrence)
-            else:
-                seen_requests[request_key] = display_number
+            # Update the mapping
+            self._display_to_request_map = new_display_to_request_map
             
-            # Rest of the display code...
-            status = str(req.get('status', "Pending"))
-            if status.isdigit():
-                status_code = int(status)
-                if 200 <= status_code < 300:
-                    status = "%s (OK)" % status_code
-                elif status_code >= 400:
-                    status = "%s (Error)" % status_code
+            # Restore highlights
+            self.highlight_renderer.highlight_colors = current_highlights
             
-            self.log_model.addRow([
-                display_number,
-                req.get('screen_name', ""),
-                req.get('screen_url', ""),
-                req.get('button_name', ""),
-                method,
-                req.get('transition_url', ""),
-                req.get('params', 0),
-                status,
-                req.get('length', 0)
-            ])
-        
-        # Restore highlights
-        self.highlight_renderer.highlight_colors = current_highlights
-        self.log_table.repaint()
+            # RESTORE SELECTION BY REQUEST NUMBER
+            if selected_request_numbers:
+                self.log_table.clearSelection()
+                selection_restored = False
+                
+                for view_row in range(min(len(self._display_to_request_map), self.log_model.getRowCount())):
+                    # Get the request number from column 0
+                    request_number_value = self.log_model.getValueAt(view_row, 0)
+                    if request_number_value:
+                        try:
+                            # Extract the actual number (handle asterisks for duplicates)
+                            if isinstance(request_number_value, str):
+                                clean_value = request_number_value.replace('*', '').strip()
+                                if clean_value.isdigit():
+                                    req_num = int(clean_value)
+                                else:
+                                    continue
+                            else:
+                                req_num = int(request_number_value)
+                            
+                            # Select if this request number was previously selected
+                            if req_num in selected_request_numbers:
+                                self.log_table.addRowSelectionInterval(view_row, view_row)
+                                selection_restored = True
+                                
+                        except Exception as e:
+                            continue
+            
+            # MAINTAIN SCROLL POSITION - Don't auto-scroll to new rows
+            # The selected rows stay in place, user can manually scroll to see new logs
+            
+            # Force UI refresh
+            self.log_table.repaint()
+            
+        except Exception as e:
+            print "[ERROR] _update_display failed: {}".format(str(e))
+            import traceback
+            traceback.print_exc()
 
     def _renumber_requests(self):
         """Renumber requests after deletions"""
@@ -735,14 +1156,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         # First check if the URL is in scope
         url = messageInfo.getUrl()
-        
-        # DEBUG: Check scope rules and result
-        print "[SCOPE DEBUG] Custom scope rules:", self._custom_scope_rules
-        print "[SCOPE DEBUG] Scope check result:", self._check_custom_scope(url)
-        print "[SCOPE DEBUG] URL:", url.toString()
-        
+
         if not self._check_custom_scope(url):
-            print "[SCOPE FILTERED OUT]", url.toString()
             return
         
         if self._paused:
@@ -763,10 +1178,27 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 'params': self._get_parameters_count(analyzed),
                 'status': "Pending",
                 'length': 0,
-                'messageInfo': messageInfo,  # Store the messageInfo object
+                'messageInfo': messageInfo,
                 'request_hash': hash(messageInfo.getRequest().tostring())
             }
             self.requests.append(entry)
+            
+            # Update status immediately
+            self._update_status()
+            
+            # Only update display periodically to reduce flickering
+            # Update more frequently when table is small, less when large
+            total_requests = len(self.requests)
+            if total_requests < 50:
+                update_frequency = 3  # Update every 3 requests
+            elif total_requests < 200:
+                update_frequency = 5  # Update every 5 requests
+            else:
+                update_frequency = 10  # Update every 10 requests
+                
+            if total_requests % update_frequency == 0 or total_requests < 10:
+                self._update_display()
+            
         else:
             # Process response...
             response = messageInfo.getResponse()
@@ -781,22 +1213,14 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     if req.get('request_hash') == request_hash and req['status'] == "Pending":
                         req['status'] = status_code
                         req['length'] = response_length
-                        # CRITICAL: Update the stored messageInfo with the response
-                        req['messageInfo'] = messageInfo  # This line is missing!
+                        req['messageInfo'] = messageInfo
+                        
+                        # Update display for status changes, but less frequently
+                        if len(self.requests) % 5 == 0:
+                            self._update_display()
                         break
-        
-        self._update_status()
-        self._update_display()
-
-        tool_names = {
-            4: "PROXY", 8: "SPIDER", 16: "SCANNER", 32: "INTRUDER",
-            64: "REPEATER", 128: "SEQUENCER", 256: "EXTENDER"
-        }
-        
-        url = messageInfo.getUrl()
-        tool_name = tool_names.get(toolFlag, "UNKNOWN")
-        
-        print "[TOOL: {}] URL: {}".format(tool_name, url.toString())
+            
+            self._update_status()
 
 
     def _get_parameters_count(self, analyzed_request):
@@ -840,6 +1264,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         control_panel.add(self.export_button) 
         control_panel.add(self.clear_button)
         control_panel.add(self.pause_button)
+        control_panel.add(self.duplicate_button)
+        control_panel.add(self.refresh_button) 
         control_panel.add(self.status_label)
         
         # TOP SECTION: Log table (full width)
@@ -887,13 +1313,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if self._paused:
             self.pause_button.setText("Resume Logging")
             self.status_label.setText("PAUSED - Logging stopped")
-            print "[+] Logging paused"
         else:
             self.pause_button.setText("Pause Logging")
             # Simply clear any pending requests without asking
             self._pending_requests = []
             self._update_status()
-            print "[+] Logging resumed"
 
     def _process_single_message(self, toolFlag, messageInfo):
         """Helper to process a single message"""
@@ -987,7 +1411,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             self.highlight_renderer.highlight_colors.clear()
             
             self._update_status()
-            print "[+] All requests and highlights cleared"
 
     def _check_custom_scope(self, url):
         # If no scope rules defined, include everything
@@ -1009,11 +1432,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             for rule in self._custom_scope_rules:
                 rule_protocol, rule_host, rule_port, rule_path = rule
                 
-                # DEBUG: Print rule matching info
-                print "[Scope Debug] Checking: {}://{}:{}{} against rule: {}://{}:{}{}".format(
-                    protocol, host, port, path,
-                    rule_protocol or "any", rule_host or "any-host", rule_port or "any-port", rule_path or "any-path"
-                )
                 
                 # Protocol check
                 if rule_protocol and rule_protocol != protocol:
@@ -1042,17 +1460,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     if not current_path.startswith(rule_path):
                         continue
                         
-                # If we get here, all specified rule components matched
-                print "[Scope Debug] MATCHED: {}://{}:{}{}".format(protocol, host, port, path)
                 return True
-            
-            # No rules matched
-            print "[Scope Debug] NO MATCH: {}://{}:{}{}".format(protocol, host, port, path)
             return False
             
         except Exception as e:
-            # If URL parsing fails, be safe and exclude it
-            print "[-] Error checking scope for URL: {} - {}".format(url.toString(), str(e))
             return False
     
     def _show_scope_dialog(self, event):
@@ -1159,15 +1570,18 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
 
     def _show_filter_dialog(self, event):
         dialog = JDialog()
-        dialog.setTitle("Filter by File Extension")
-        dialog.setSize(500, 400)  # Increased size for new controls
+        dialog.setTitle("Filter by File Extension and Directory")
+        dialog.setSize(600, 500)  # Increased size for new controls
         dialog.setLayout(BorderLayout())
         dialog.setModal(True)
         
-        # Main content panel
-        main_panel = JPanel(BorderLayout(10, 10))
+        # Main content panel with tabbed interface
+        tabbed_pane = JTabbedPane()
         
-        # PRESET SELECTION PANEL (NEW)
+        # TAB 1: Extension Filters
+        extension_panel = JPanel(BorderLayout(10, 10))
+        
+        # PRESET SELECTION PANEL
         preset_panel = JPanel(BorderLayout(5, 5))
         preset_panel.add(JLabel("Quick Presets:"), BorderLayout.NORTH)
         self.preset_combo = JComboBox(["Custom", "Basic Filter", "Comprehensive Filter", "Minimal Filter", "Security Focus Only"])
@@ -1175,7 +1589,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         preset_panel.add(self.preset_combo, BorderLayout.CENTER)
         
         # Extension Input Panel
-        input_panel = JPanel(GridLayout(4, 1, 5, 5))
+        extension_input_panel = JPanel(GridLayout(4, 1, 5, 5))
         
         # Include Extensions
         include_panel = JPanel(BorderLayout())
@@ -1189,34 +1603,143 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self.exclude_field = JTextField(",".join(self._exclude_extensions))
         exclude_panel.add(self.exclude_field, BorderLayout.CENTER)
         
-        input_panel.add(include_panel)
-        input_panel.add(exclude_panel)
+        extension_input_panel.add(include_panel)
+        extension_input_panel.add(exclude_panel)
         
         # Info label
         info_label = JLabel("Note: Include filter has priority over exclude filter")
         info_label.setForeground(Color.GRAY)
         
+        # Assembly for extension tab
+        extension_panel.add(preset_panel, BorderLayout.NORTH)
+        extension_panel.add(extension_input_panel, BorderLayout.CENTER)
+        extension_panel.add(info_label, BorderLayout.SOUTH)
+        
+        # TAB 2: Directory Filters
+        directory_panel = JPanel(BorderLayout(10, 10))
+        
+        # Directory Input Panel
+        directory_input_panel = JPanel(GridLayout(4, 1, 5, 5))
+        
+        # Include Directories
+        include_dir_panel = JPanel(BorderLayout())
+        include_dir_panel.add(JLabel("Show ONLY these directories (comma separated):"), BorderLayout.NORTH)
+        self.include_dir_field = JTextField(",".join(self._include_directories))
+        include_dir_panel.add(self.include_dir_field, BorderLayout.CENTER)
+        include_dir_panel.add(JLabel("Example: /api/, /admin/, /assets/"), BorderLayout.SOUTH)
+        
+        # Exclude Directories
+        exclude_dir_panel = JPanel(BorderLayout())
+        exclude_dir_panel.add(JLabel("HIDE these directories (comma separated):"), BorderLayout.NORTH)
+        self.exclude_dir_field = JTextField(",".join(self._exclude_directories))
+        exclude_dir_panel.add(self.exclude_dir_field, BorderLayout.CENTER)
+        exclude_dir_panel.add(JLabel("Example: /static/, /images/, /css/"), BorderLayout.SOUTH)
+        
+        directory_input_panel.add(include_dir_panel)
+        directory_input_panel.add(exclude_dir_panel)
+        
+        # Directory Info
+        dir_info_label = JLabel("Note: Directory paths are case-sensitive. Use trailing slash for directories.")
+        dir_info_label.setForeground(Color.GRAY)
+        
+        # Assembly for directory tab
+        directory_panel.add(JLabel("Directory-based Filtering", JLabel.CENTER), BorderLayout.NORTH)
+        directory_panel.add(directory_input_panel, BorderLayout.CENTER)
+        directory_panel.add(dir_info_label, BorderLayout.SOUTH)
+        
+        # Add tabs to tabbed pane
+        tabbed_pane.addTab("Extensions", extension_panel)
+        tabbed_pane.addTab("Directories", directory_panel)
+        
         # Button Panel
         button_panel = JPanel(FlowLayout(FlowLayout.CENTER))
-        apply_btn = JButton("Apply Filters", actionPerformed=lambda e: self._apply_filters(dialog))
+        apply_btn = JButton("Apply All Filters", actionPerformed=lambda e: self._apply_all_filters(dialog))
         button_panel.add(apply_btn)
         
         cancel_btn = JButton("Cancel", actionPerformed=lambda e: dialog.dispose())
         button_panel.add(cancel_btn)
         
-        # Clear btn
-        clear_btn = JButton("Clear All Filters", actionPerformed=lambda e: self._clear_filters())
+        clear_btn = JButton("Clear All Filters", actionPerformed=lambda e: self._clear_all_filters())
         button_panel.add(clear_btn)
         
         # Assembly
-        main_panel.add(preset_panel, BorderLayout.NORTH)
-        main_panel.add(input_panel, BorderLayout.CENTER)
-        main_panel.add(info_label, BorderLayout.SOUTH)
-        
-        dialog.add(main_panel, BorderLayout.CENTER)
+        dialog.add(tabbed_pane, BorderLayout.CENTER)
         dialog.add(button_panel, BorderLayout.SOUTH)
         dialog.setLocationRelativeTo(None)
         dialog.setVisible(True)
+
+    def _apply_all_filters(self, dialog):
+        """Apply both extension and directory filters"""
+        # Process extension filters
+        include_text = self.include_field.getText().strip()
+        exclude_text = self.exclude_field.getText().strip()
+
+        # Process include extensions
+        self._include_extensions = []
+        if include_text:
+            extensions = [ext.strip() for ext in include_text.split(",") if ext.strip()]
+            for ext in extensions:
+                if not ext.startswith('.'):
+                    ext = '.' + ext
+                self._include_extensions.append(ext.lower())
+
+        # Process exclude extensions
+        self._exclude_extensions = []
+        if exclude_text:
+            extensions = [ext.strip() for ext in exclude_text.split(",") if ext.strip()]
+            for ext in extensions:
+                if not ext.startswith('.'):
+                    ext = '.' + ext
+                self._exclude_extensions.append(ext.lower())
+
+        # Process directory filters
+        include_dir_text = self.include_dir_field.getText().strip()
+        exclude_dir_text = self.exclude_dir_field.getText().strip()
+
+        # Process include directories
+        self._include_directories = []
+        if include_dir_text:
+            directories = [dir_path.strip() for dir_path in include_dir_text.split(",") if dir_path.strip()]
+            for dir_path in directories:
+                # Ensure directory path starts with /
+                if not dir_path.startswith('/'):
+                    dir_path = '/' + dir_path
+                # Ensure directory path ends with / for consistency
+                if not dir_path.endswith('/'):
+                    dir_path = dir_path + '/'
+                self._include_directories.append(dir_path)
+
+        # Process exclude directories
+        self._exclude_directories = []
+        if exclude_dir_text:
+            directories = [dir_path.strip() for dir_path in exclude_dir_text.split(",") if dir_path.strip()]
+            for dir_path in directories:
+                # Ensure directory path starts with /
+                if not dir_path.startswith('/'):
+                    dir_path = '/' + dir_path
+                # Ensure directory path ends with / for consistency
+                if not dir_path.endswith('/'):
+                    dir_path = dir_path + '/'
+                self._exclude_directories.append(dir_path)
+
+        dialog.dispose()
+        self._update_display()  # Refresh display with new filters
+        
+        # Update status to show active filters
+        total_filters = (len(self._include_extensions) + len(self._exclude_extensions) +
+                        len(self._include_directories) + len(self._exclude_directories))
+        
+        if total_filters > 0:
+            self.status_label.setText("Applied {} filter rules".format(total_filters))
+
+    def _clear_all_filters(self):
+        """Clear all extension and directory filters"""
+        self._include_extensions = []
+        self._exclude_extensions = []
+        self._include_directories = []
+        self._exclude_directories = []
+        self._update_display()
+        self.status_label.setText("All filters cleared")
 
     def _apply_preset_filter(self):
         """Apply selected preset filter"""
@@ -1235,16 +1758,12 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             
             self.include_field.setText(include_text)
             self.exclude_field.setText(exclude_text)
-            
-            # Show confirmation
-            print "[+] Applied preset: {}".format(preset_name)
 
-    def _clear_filters(self):
-        """Clear all extension filters"""
-        self._include_extensions = []
-        self._exclude_extensions = []
-        self._update_display()
-        print "[+] All extension filters cleared"
+#    def _clear_filters(self):
+#        """Clear all extension filters"""
+#        self._include_extensions = []
+#        self._exclude_extensions = []
+#        self._update_display()
 
     def _apply_filters(self, dialog):
         include_text = self.include_field.getText().strip()
@@ -1273,15 +1792,27 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         
         # Show filter summary
         total_filters = len(self._include_extensions) + len(self._exclude_extensions)
-        print "[+] Applied {} filter rules ({} include, {} exclude)".format(
-            total_filters, len(self._include_extensions), len(self._exclude_extensions))
 
     def _should_display(self, entry):
-        # Use the actual URL from the messageInfo, not the blank screen_url
+        # Use the actual URL from the messageInfo
         try:
             url = entry['messageInfo'].getUrl().toString()
+            url_path = entry['messageInfo'].getUrl().getPath() or ""
         except:
             url = entry.get('screen_url', '')
+            url_path = ""
+        
+        # Check include directories (if any are specified)
+        if self._include_directories:
+            has_include_dir = any(url_path.startswith(dir_path) for dir_path in self._include_directories)
+            if not has_include_dir:
+                return False
+        
+        # Check exclude directories (if any are specified)
+        if self._exclude_directories:
+            has_exclude_dir = any(url_path.startswith(dir_path) for dir_path in self._exclude_directories)
+            if has_exclude_dir:
+                return False
         
         # Check include extensions
         if self._include_extensions:
@@ -1307,12 +1838,34 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
 
     def _update_status(self):
         pending_count = len(self._pending_requests)
-        status_text = "Captured: {} requests".format(len(self.requests))
+        
+        # Calculate unique requests count
+        unique_requests = set()
+        for req in self.requests:
+            try:
+                url = req['messageInfo'].getUrl().toString()
+                method = req['method']
+                unique_requests.add((url, method))
+            except:
+                pass
+        
+        total_requests = len(self.requests)
+        unique_count = len(unique_requests)
+        duplicate_count = total_requests - unique_count
+        
+        status_text = "Captured: {} requests ({} unique, {} duplicates)".format(
+            total_requests, unique_count, duplicate_count)
         
         if pending_count > 0:
             status_text += " | {} pending".format(pending_count)
         
         status_text += " | Last: {}".format(datetime.now().strftime("%H:%M:%S"))
+        
+        # Add duplicate filter status
+        if self._hide_duplicates:
+            status_text += " | Duplicates: HIDDEN"
+        else:
+            status_text += " | Duplicates: SHOWN"
         
         self.status_label.setText(status_text)
 
