@@ -296,6 +296,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         callbacks.setExtensionName("Site Survey Logger")
         callbacks.registerHttpListener(self)
         
+        # Force UTF-8 encoding for better international character support
+        import sys
+        reload(sys)
+        sys.setdefaultencoding('utf-8')
+        
         # Initialize UI components
         self._init_ui_components()
         
@@ -676,8 +681,13 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             if not file_path.lower().endswith('.csv'):
                 file_path += '.csv'
             
+            # In your _export_to_excel method, replace the writing part with:
             try:
+                # Use UTF-8 with BOM for better Excel compatibility with Japanese
                 with open(file_path, 'wb') as csvfile:
+                    # Write UTF-8 BOM for Excel compatibility
+                    csvfile.write('\ufeff'.encode('utf-8'))
+                    
                     writer = csv.writer(csvfile)
                     
                     # Write headers
@@ -692,8 +702,23 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                         row_data = []
                         for col in range(self.log_model.getColumnCount()):
                             value = self.log_model.getValueAt(row, col)
-                            row_data.append(str(value) if value is not None else "")
-                        writer.writerow(row_data)
+                            # Handle encoding for export
+                            if value is not None:
+                                try:
+                                    # Ensure proper encoding for export
+                                    if isinstance(value, str):
+                                        # Normalize the string - encode to bytes then decode back
+                                        encoded_value = value.encode('utf-8', 'replace').decode('utf-8')
+                                        row_data.append(encoded_value)
+                                    else:
+                                        row_data.append(str(value))
+                                except:
+                                    row_data.append("[Encoding Error]")
+                            else:
+                                row_data.append("")
+                        # Encode each row to UTF-8 before writing
+                        encoded_row = [cell.encode('utf-8') if isinstance(cell, unicode) else str(cell) for cell in row_data]
+                        writer.writerow(encoded_row)
                 
                 JOptionPane.showMessageDialog(None,
                     "Exported {} filtered requests to:\n{}".format(self.log_model.getRowCount(), file_path),
@@ -705,6 +730,18 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     "Export failed: {}".format(str(e)),
                     "Error",
                     JOptionPane.ERROR_MESSAGE)
+
+    def _safe_string(self, value):
+        """Safely convert value to string with proper encoding handling"""
+        if value is None:
+            return ""
+        try:
+            if isinstance(value, str):
+                # Handle any encoding issues
+                return value.encode('utf-8', 'replace').decode('utf-8')
+            return str(value)
+        except:
+            return "[Encoding Error]"
 
 
     def _delete_selected(self, event=None):
@@ -1019,7 +1056,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             # Create new mapping between display rows and actual request indices
             new_display_to_request_map = []
 
-
             # Update table rows - only modify what changed
             displayed_count = 0
             
@@ -1041,7 +1077,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 
                 new_display_to_request_map.append(req_index)
                 
-                # Prepare row data
+                # Prepare row data with proper encoding handling
                 status = str(req.get('status', "Pending"))
                 if status.isdigit():
                     status_code = int(status)
@@ -1050,16 +1086,28 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     elif status_code >= 400:
                         status = "%s (Error)" % status_code
                 
+                # Safely encode all string values to handle non-ASCII characters
+                def safe_encode(value):
+                    if value is None:
+                        return ""
+                    try:
+                        if isinstance(value, str):
+                            # Encode to UTF-8 and decode back to handle any encoding issues
+                            return value.encode('utf-8', 'replace').decode('utf-8')
+                        return str(value)
+                    except:
+                        return "[Encoding Error]"
+                
                 row_data = [
-                    display_number,
-                    req.get('screen_name', ""),
-                    req.get('screen_url', ""),
-                    req.get('button_name', ""),
-                    method,
-                    req.get('transition_url', ""),
-                    req.get('params', 0),
-                    status,
-                    req.get('length', 0)
+                    safe_encode(display_number),
+                    safe_encode(req.get('screen_name', "")),
+                    safe_encode(req.get('screen_url', "")),
+                    safe_encode(req.get('button_name', "")),
+                    safe_encode(method),
+                    safe_encode(req.get('transition_url', "")),
+                    safe_encode(req.get('params', 0)),
+                    safe_encode(status),
+                    safe_encode(req.get('length', 0))
                 ]
                 
                 # Update or add row
@@ -1110,9 +1158,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                                 
                         except Exception as e:
                             continue
-            
-            # MAINTAIN SCROLL POSITION - Don't auto-scroll to new rows
-            # The selected rows stay in place, user can manually scroll to see new logs
             
             # Force UI refresh
             self.log_table.repaint()
