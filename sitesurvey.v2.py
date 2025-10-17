@@ -681,13 +681,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             if not file_path.lower().endswith('.csv'):
                 file_path += '.csv'
             
-            # In your _export_to_excel method, replace the writing part with:
             try:
-                # Use UTF-8 with BOM for better Excel compatibility with Japanese
-                with open(file_path, 'wb') as csvfile:
-                    # Write UTF-8 BOM for Excel compatibility
-                    csvfile.write('\ufeff'.encode('utf-8'))
-                    
+                # Use UTF-8 encoding for CSV file to support Japanese
+                import codecs
+                with codecs.open(file_path, 'w', encoding='utf-8-sig') as csvfile:  # utf-8-sig for Excel compatibility
                     writer = csv.writer(csvfile)
                     
                     # Write headers
@@ -702,23 +699,19 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                         row_data = []
                         for col in range(self.log_model.getColumnCount()):
                             value = self.log_model.getValueAt(row, col)
-                            # Handle encoding for export
+                            # Handle encoding for Japanese export
                             if value is not None:
                                 try:
-                                    # Ensure proper encoding for export
+                                    # Ensure proper encoding for Japanese characters
                                     if isinstance(value, str):
-                                        # Normalize the string - encode to bytes then decode back
-                                        encoded_value = value.encode('utf-8', 'replace').decode('utf-8')
-                                        row_data.append(encoded_value)
+                                        row_data.append(value)
                                     else:
                                         row_data.append(str(value))
                                 except:
                                     row_data.append("[Encoding Error]")
                             else:
                                 row_data.append("")
-                        # Encode each row to UTF-8 before writing
-                        encoded_row = [cell.encode('utf-8') if isinstance(cell, unicode) else str(cell) for cell in row_data]
-                        writer.writerow(encoded_row)
+                        writer.writerow(row_data)
                 
                 JOptionPane.showMessageDialog(None,
                     "Exported {} filtered requests to:\n{}".format(self.log_model.getRowCount(), file_path),
@@ -1077,7 +1070,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 
                 new_display_to_request_map.append(req_index)
                 
-                # Prepare row data with proper encoding handling
+                # Prepare row data with proper encoding handling for Japanese
                 status = str(req.get('status', "Pending"))
                 if status.isdigit():
                     status_code = int(status)
@@ -1086,13 +1079,13 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     elif status_code >= 400:
                         status = "%s (Error)" % status_code
                 
-                # Safely encode all string values to handle non-ASCII characters
+                # Safely encode all string values to handle Japanese characters
                 def safe_encode(value):
                     if value is None:
                         return ""
                     try:
                         if isinstance(value, str):
-                            # Encode to UTF-8 and decode back to handle any encoding issues
+                            # Handle Japanese and other Unicode characters properly
                             return value.encode('utf-8', 'replace').decode('utf-8')
                         return str(value)
                     except:
@@ -1746,9 +1739,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if include_dir_text:
             directories = [dir_path.strip() for dir_path in include_dir_text.split(",") if dir_path.strip()]
             for dir_path in directories:
-                # Ensure directory path starts with / for consistency
+                # Ensure directory path starts with /
                 if not dir_path.startswith('/'):
                     dir_path = '/' + dir_path
+                # Don't force trailing slash - let users specify exactly what they want
                 self._include_directories.append(dir_path)
 
         # Process exclude directories
@@ -1756,9 +1750,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if exclude_dir_text:
             directories = [dir_path.strip() for dir_path in exclude_dir_text.split(",") if dir_path.strip()]
             for dir_path in directories:
-                # Ensure directory path starts with / for consistency
+                # Ensure directory path starts with /
                 if not dir_path.startswith('/'):
                     dir_path = '/' + dir_path
+                # Don't force trailing slash - let users specify exactly what they want
                 self._exclude_directories.append(dir_path)
 
         dialog.dispose()
@@ -1845,8 +1840,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if self._include_directories:
             has_include_dir = False
             for dir_path in self._include_directories:
-                # Check if the URL path contains the directory path
-                if dir_path in url_path:
+                # Remove trailing slash for comparison if present
+                clean_dir_path = dir_path.rstrip('/')
+                # Check if the URL path contains the directory path (not just starts with)
+                if clean_dir_path in url_path:
                     has_include_dir = True
                     break
             if not has_include_dir:
@@ -1855,8 +1852,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         # Check exclude directories (if any are specified)
         if self._exclude_directories:
             for dir_path in self._exclude_directories:
-                # Check if the URL path contains the directory path
-                if dir_path in url_path:
+                # Remove trailing slash for comparison if present
+                clean_dir_path = dir_path.rstrip('/')
+                # Check if the URL path contains the directory path (not just starts with)
+                if clean_dir_path in url_path:
                     return False
 
         # Check include extensions
