@@ -291,15 +291,15 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         }
 
     def registerExtenderCallbacks(self, callbacks):
+        # Force UTF-8 encoding for Japanese text support
+        import sys
+        reload(sys)
+        sys.setdefaultencoding('utf-8')
+        
         self._callbacks = callbacks
         self._helpers = callbacks.getHelpers()
         callbacks.setExtensionName("Site Survey Logger")
         callbacks.registerHttpListener(self)
-        
-        # Force UTF-8 encoding for better international character support
-        import sys
-        reload(sys)
-        sys.setdefaultencoding('utf-8')
         
         # Initialize UI components
         self._init_ui_components()
@@ -423,11 +423,14 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self._setup_context_menu()
         
     def _setup_editable_columns(self):
-        self.log_table.getColumnModel().getColumn(0).setCellEditor(  # Screen Name
+        # Create text fields that support Japanese input
+        japanese_text_field = JTextField()
+        
+        self.log_table.getColumnModel().getColumn(1).setCellEditor(  # Screen Name
+            DefaultCellEditor(japanese_text_field))
+        self.log_table.getColumnModel().getColumn(3).setCellEditor(  # Button Name
             DefaultCellEditor(JTextField()))
-        self.log_table.getColumnModel().getColumn(2).setCellEditor(  # Button Name
-            DefaultCellEditor(JTextField()))
-        self.log_table.getColumnModel().getColumn(3).setCellEditor(  # Method
+        self.log_table.getColumnModel().getColumn(4).setCellEditor(  # Method
             DefaultCellEditor(JTextField()))
         
     def _handle_row_selection(self, event):
@@ -478,7 +481,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             self._response_viewer.setMessage(bytearray(), False)
 
     def _save_table_edits(self):
-        """Save user edits from the table back to the requests data"""
+        """Save user edits from the table back to the requests data with proper encoding"""
         if not hasattr(self, '_display_to_request_map'):
             return
             
@@ -486,18 +489,38 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             if row < len(self._display_to_request_map):
                 actual_index = self._display_to_request_map[row]
                 if actual_index < len(self.requests):
-                    # Get values from table model
+                    # Get values from table model and preserve Japanese text
                     screen_name = self.log_model.getValueAt(row, 1)  # Column 1: Screen Name
                     screen_url = self.log_model.getValueAt(row, 2)   # Column 2: Screen URL  
                     button_name = self.log_model.getValueAt(row, 3)  # Column 3: Button Name
                     
-                    # Save to actual request data
+                    # Save to actual request data with proper encoding handling
                     if screen_name is not None:
-                        self.requests[actual_index]['screen_name'] = str(screen_name)
+                        try:
+                            if isinstance(screen_name, unicode):
+                                self.requests[actual_index]['screen_name'] = screen_name.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['screen_name'] = str(screen_name)
+                        except:
+                            self.requests[actual_index]['screen_name'] = str(screen_name)
+                    
                     if screen_url is not None:
-                        self.requests[actual_index]['screen_url'] = str(screen_url)
+                        try:
+                            if isinstance(screen_url, unicode):
+                                self.requests[actual_index]['screen_url'] = screen_url.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['screen_url'] = str(screen_url)
+                        except:
+                            self.requests[actual_index]['screen_url'] = str(screen_url)
+                    
                     if button_name is not None:
-                        self.requests[actual_index]['button_name'] = str(button_name)
+                        try:
+                            if isinstance(button_name, unicode):
+                                self.requests[actual_index]['button_name'] = button_name.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['button_name'] = str(button_name)
+                        except:
+                            self.requests[actual_index]['button_name'] = str(button_name)
 
 
     def _refresh_display(self, event=None):
@@ -1070,7 +1093,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 
                 new_display_to_request_map.append(req_index)
                 
-                # Prepare row data with proper encoding handling for Japanese
+                # Prepare row data with proper Japanese text handling
                 status = str(req.get('status', "Pending"))
                 if status.isdigit():
                     status_code = int(status)
@@ -1078,29 +1101,34 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                         status = "%s (OK)" % status_code
                     elif status_code >= 400:
                         status = "%s (Error)" % status_code
-                
-                # Safely encode all string values to handle Japanese characters
-                def safe_encode(value):
+
+                # Handle Japanese text properly - don't re-encode if already unicode
+                def safe_get_value(value, default=""):
                     if value is None:
-                        return ""
+                        return default
                     try:
-                        if isinstance(value, str):
-                            # Handle Japanese and other Unicode characters properly
-                            return value.encode('utf-8', 'replace').decode('utf-8')
-                        return str(value)
+                        # If it's already unicode, return as is
+                        if isinstance(value, unicode):
+                            return value
+                        # If it's a string, decode from UTF-8
+                        elif isinstance(value, str):
+                            return value.decode('utf-8')
+                        # Otherwise convert to string
+                        else:
+                            return unicode(str(value))
                     except:
-                        return "[Encoding Error]"
-                
+                        return unicode(str(default))
+
                 row_data = [
-                    safe_encode(display_number),
-                    safe_encode(req.get('screen_name', "")),
-                    safe_encode(req.get('screen_url', "")),
-                    safe_encode(req.get('button_name', "")),
-                    safe_encode(method),
-                    safe_encode(req.get('transition_url', "")),
-                    safe_encode(req.get('params', 0)),
-                    safe_encode(status),
-                    safe_encode(req.get('length', 0))
+                    safe_get_value(display_number),
+                    safe_get_value(req.get('screen_name', "")),
+                    safe_get_value(req.get('screen_url', "")),
+                    safe_get_value(req.get('button_name', "")),
+                    safe_get_value(method),
+                    safe_get_value(req.get('transition_url', "")),
+                    safe_get_value(req.get('params', 0)),
+                    safe_get_value(status),
+                    safe_get_value(req.get('length', 0))
                 ]
                 
                 # Update or add row
@@ -1207,10 +1235,26 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             analyzed = self._helpers.analyzeRequest(messageInfo)
             url_str = url.toString()
             
+            # Ensure Japanese text is handled properly
+            screen_name = req.get('screen_name', '')
+            button_name = req.get('button_name', '')
+            
+            # If these are strings, ensure they're properly encoded
+            if isinstance(screen_name, str):
+                try:
+                    screen_name = screen_name.decode('utf-8')
+                except:
+                    pass
+            if isinstance(button_name, str):
+                try:
+                    button_name = button_name.decode('utf-8')
+                except:
+                    pass
+            
             entry = {
                 'number': len(self.requests) + 1,
                 'screen_url': "",
-                'button_name': "",
+                'button_name': button_name,
                 'method': analyzed.getMethod(),
                 'transition_url': url_str,
                 'params': self._get_parameters_count(analyzed),
