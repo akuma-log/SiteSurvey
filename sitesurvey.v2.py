@@ -1616,97 +1616,97 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
     def _show_filter_dialog(self, event):
         dialog = JDialog()
         dialog.setTitle("Filter by File Extension and Directory")
-        dialog.setSize(600, 500)  # Increased size for new controls
+        dialog.setSize(600, 500)
         dialog.setLayout(BorderLayout())
         dialog.setModal(True)
-        
+
         # Main content panel with tabbed interface
         tabbed_pane = JTabbedPane()
-        
+
         # TAB 1: Extension Filters
         extension_panel = JPanel(BorderLayout(10, 10))
-        
+
         # PRESET SELECTION PANEL
         preset_panel = JPanel(BorderLayout(5, 5))
         preset_panel.add(JLabel("Quick Presets:"), BorderLayout.NORTH)
         self.preset_combo = JComboBox(["Custom", "Basic Filter", "Comprehensive Filter", "Minimal Filter", "Security Focus Only"])
         self.preset_combo.addActionListener(lambda e: self._apply_preset_filter())
         preset_panel.add(self.preset_combo, BorderLayout.CENTER)
-        
+
         # Extension Input Panel
         extension_input_panel = JPanel(GridLayout(4, 1, 5, 5))
-        
+
         # Include Extensions
         include_panel = JPanel(BorderLayout())
         include_panel.add(JLabel("Show ONLY these extensions (comma separated):"), BorderLayout.NORTH)
         self.include_field = JTextField(",".join(self._include_extensions))
         include_panel.add(self.include_field, BorderLayout.CENTER)
-        
+
         # Exclude Extensions
         exclude_panel = JPanel(BorderLayout())
         exclude_panel.add(JLabel("HIDE these extensions (comma separated):"), BorderLayout.NORTH)
         self.exclude_field = JTextField(",".join(self._exclude_extensions))
         exclude_panel.add(self.exclude_field, BorderLayout.CENTER)
-        
+
         extension_input_panel.add(include_panel)
         extension_input_panel.add(exclude_panel)
-        
+
         # Info label
         info_label = JLabel("Note: Include filter has priority over exclude filter")
         info_label.setForeground(Color.GRAY)
-        
+
         # Assembly for extension tab
         extension_panel.add(preset_panel, BorderLayout.NORTH)
         extension_panel.add(extension_input_panel, BorderLayout.CENTER)
         extension_panel.add(info_label, BorderLayout.SOUTH)
-        
+
         # TAB 2: Directory Filters
         directory_panel = JPanel(BorderLayout(10, 10))
-        
+
         # Directory Input Panel
         directory_input_panel = JPanel(GridLayout(4, 1, 5, 5))
-        
+
         # Include Directories
         include_dir_panel = JPanel(BorderLayout())
-        include_dir_panel.add(JLabel("Show ONLY these directories (comma separated):"), BorderLayout.NORTH)
+        include_dir_panel.add(JLabel("Show ONLY URLs containing these paths (comma separated):"), BorderLayout.NORTH)
         self.include_dir_field = JTextField(",".join(self._include_directories))
         include_dir_panel.add(self.include_dir_field, BorderLayout.CENTER)
-        include_dir_panel.add(JLabel("Example: /api/, /admin/, /assets/"), BorderLayout.SOUTH)
-        
+        include_dir_panel.add(JLabel("Example: /wp-content/, /api/, /admin/"), BorderLayout.SOUTH)
+
         # Exclude Directories
         exclude_dir_panel = JPanel(BorderLayout())
-        exclude_dir_panel.add(JLabel("HIDE these directories (comma separated):"), BorderLayout.NORTH)
+        exclude_dir_panel.add(JLabel("HIDE URLs containing these paths (comma separated):"), BorderLayout.NORTH)
         self.exclude_dir_field = JTextField(",".join(self._exclude_directories))
         exclude_dir_panel.add(self.exclude_dir_field, BorderLayout.CENTER)
-        exclude_dir_panel.add(JLabel("Example: /static/, /images/, /css/"), BorderLayout.SOUTH)
-        
+        exclude_dir_panel.add(JLabel("Example: /wp-content/, /static/, /images/"), BorderLayout.SOUTH)
+
         directory_input_panel.add(include_dir_panel)
         directory_input_panel.add(exclude_dir_panel)
-        
+
         # Directory Info
-        dir_info_label = JLabel("Note: Directory paths are case-sensitive. Use trailing slash for directories.")
+        dir_info_label = JLabel("Note: Directory paths are case-sensitive. Use partial paths like /wp-content/ to match all subdirectories.")
         dir_info_label.setForeground(Color.GRAY)
-        
+
         # Assembly for directory tab
         directory_panel.add(JLabel("Directory-based Filtering", JLabel.CENTER), BorderLayout.NORTH)
         directory_panel.add(directory_input_panel, BorderLayout.CENTER)
         directory_panel.add(dir_info_label, BorderLayout.SOUTH)
-        
+
         # Add tabs to tabbed pane
         tabbed_pane.addTab("Extensions", extension_panel)
         tabbed_pane.addTab("Directories", directory_panel)
-        
+
         # Button Panel
         button_panel = JPanel(FlowLayout(FlowLayout.CENTER))
         apply_btn = JButton("Apply All Filters", actionPerformed=lambda e: self._apply_all_filters(dialog))
         button_panel.add(apply_btn)
-        
+
         cancel_btn = JButton("Cancel", actionPerformed=lambda e: dialog.dispose())
         button_panel.add(cancel_btn)
-        
+
         clear_btn = JButton("Clear All Filters", actionPerformed=lambda e: self._clear_all_filters())
         button_panel.add(clear_btn)
-        
+
         # Assembly
         dialog.add(tabbed_pane, BorderLayout.CENTER)
         dialog.add(button_panel, BorderLayout.SOUTH)
@@ -1746,12 +1746,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if include_dir_text:
             directories = [dir_path.strip() for dir_path in include_dir_text.split(",") if dir_path.strip()]
             for dir_path in directories:
-                # Ensure directory path starts with /
+                # Ensure directory path starts with / for consistency
                 if not dir_path.startswith('/'):
                     dir_path = '/' + dir_path
-                # Ensure directory path ends with / for consistency
-                if not dir_path.endswith('/'):
-                    dir_path = dir_path + '/'
                 self._include_directories.append(dir_path)
 
         # Process exclude directories
@@ -1759,21 +1756,18 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         if exclude_dir_text:
             directories = [dir_path.strip() for dir_path in exclude_dir_text.split(",") if dir_path.strip()]
             for dir_path in directories:
-                # Ensure directory path starts with /
+                # Ensure directory path starts with / for consistency
                 if not dir_path.startswith('/'):
                     dir_path = '/' + dir_path
-                # Ensure directory path ends with / for consistency
-                if not dir_path.endswith('/'):
-                    dir_path = dir_path + '/'
                 self._exclude_directories.append(dir_path)
 
         dialog.dispose()
         self._update_display()  # Refresh display with new filters
-        
+
         # Update status to show active filters
         total_filters = (len(self._include_extensions) + len(self._exclude_extensions) +
                         len(self._include_directories) + len(self._exclude_directories))
-        
+
         if total_filters > 0:
             self.status_label.setText("Applied {} filter rules".format(total_filters))
 
@@ -1846,31 +1840,37 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         except:
             url = entry.get('screen_url', '')
             url_path = ""
-        
+
         # Check include directories (if any are specified)
         if self._include_directories:
-            has_include_dir = any(url_path.startswith(dir_path) for dir_path in self._include_directories)
+            has_include_dir = False
+            for dir_path in self._include_directories:
+                # Check if the URL path contains the directory path
+                if dir_path in url_path:
+                    has_include_dir = True
+                    break
             if not has_include_dir:
                 return False
-        
+
         # Check exclude directories (if any are specified)
         if self._exclude_directories:
-            has_exclude_dir = any(url_path.startswith(dir_path) for dir_path in self._exclude_directories)
-            if has_exclude_dir:
-                return False
-        
+            for dir_path in self._exclude_directories:
+                # Check if the URL path contains the directory path
+                if dir_path in url_path:
+                    return False
+
         # Check include extensions
         if self._include_extensions:
             has_include = any(url.lower().endswith(ext.lower()) for ext in self._include_extensions)
             if not has_include:
                 return False
-        
+
         # Check exclude extensions
         if self._exclude_extensions:
             has_exclude = any(url.lower().endswith(ext.lower()) for ext in self._exclude_extensions)
             if has_exclude:
                 return False
-        
+
         return True
 
 
