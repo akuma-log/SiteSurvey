@@ -22,6 +22,7 @@ from java.awt.event import ActionListener, MouseAdapter
 from java.awt import Cursor
 from burp import IBurpExtender, IHttpListener, ITab, IMessageEditorController
 from javax.swing import Timer
+from java.awt.event import MouseEvent
 
 
 HIGHLIGHT_COLORS = {
@@ -118,7 +119,7 @@ class HighlightRenderer(DefaultTableCellRenderer):
             if old_no in old_to_new_map:
                 new_highlights[old_to_new_map[old_no]] = color
         self.highlight_colors = new_highlights
-    
+
 
 class CopyButtonMouseListener(MouseAdapter):
     def __init__(self, extender):
@@ -138,6 +139,10 @@ class CopyButtonMouseListener(MouseAdapter):
             table.setCursor(Cursor.getDefaultCursor())
             
     def mouseClicked(self, event):
+        # Only handle single clicks (not drags)
+        if event.getClickCount() != 1:
+            return
+            
         table = event.getSource()
         point = event.getPoint()
         row = table.rowAtPoint(point)
@@ -162,6 +167,35 @@ class CopyButtonMouseListener(MouseAdapter):
                         
                         # Show brief popup message
                         self._show_brief_popup(table, point, "Copied!")
+    
+    def _show_brief_popup(self, component, point, message):
+        # Create a small popup label
+        popup = JPopupMenu()
+        popup.setBorder(None)
+        
+        label = JLabel(message)
+        label.setForeground(Color.WHITE)
+        label.setBackground(Color(70, 130, 180))  # Steel blue color
+        label.setOpaque(True)
+        label.setBorder(JPopupMenu().getBorder())
+        popup.add(label)
+        
+        # Show popup near the click position
+        popup.show(component, point.x + 10, point.y - 25)
+        
+        # Auto-close after 1 second
+        if self.timer and self.timer.isRunning():
+            self.timer.stop()
+            
+        class PopupCloser(ActionListener):
+            def __init__(self, popup):
+                self.popup = popup
+            def actionPerformed(self, e):
+                self.popup.setVisible(False)
+                
+        self.timer = Timer(1000, PopupCloser(popup))  # 1000ms = 1 second
+        self.timer.setRepeats(False)
+        self.timer.start()
     
     def _show_brief_popup(self, component, point, message):
         # Create a small popup label
@@ -249,6 +283,118 @@ class MessageEditorController(IMessageEditorController):
         return None
 
 
+class TableDragDropListener(MouseAdapter):
+    def __init__(self, extender, table):
+        self.extender = extender
+        self.table = table
+        self.dragged_row = None
+        self.pressed_point = None
+        self.is_dragging = False
+    
+    def mousePressed(self, event):
+        # Only handle left clicks
+        if event.getButton() != MouseEvent.BUTTON1:
+            return
+            
+        point = event.getPoint()
+        row = self.table.rowAtPoint(point)
+        column = self.table.columnAtPoint(point)
+        
+        # ONLY start drag on "No." column (column 0)
+        if column != 0:
+            return
+            
+        if row >= 0:
+            self.dragged_row = row
+            self.pressed_point = point
+            self.is_dragging = True
+            self.table.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR))
+    
+    def mouseDragged(self, event):
+        if self.is_dragging and self.dragged_row is not None:
+            # Change cursor to indicate dragging
+            self.table.setCursor(Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR))
+    
+    def mouseReleased(self, event):
+        # Only handle left clicks
+        if event.getButton() != MouseEvent.BUTTON1 or not self.is_dragging:
+            self.is_dragging = False
+            return
+            
+        if self.dragged_row is not None:
+            point = event.getPoint()
+            target_row = self.table.rowAtPoint(point)
+            
+            # Only move if we're on a different valid row
+            if target_row >= 0 and target_row != self.dragged_row:
+                self._move_row(self.dragged_row, target_row)
+            
+            self._cleanup_drag()
+    
+    def _cleanup_drag(self):
+        """Clean up drag state"""
+        self.dragged_row = None
+        self.pressed_point = None
+        self.is_dragging = False
+        self.table.setCursor(Cursor.getDefaultCursor())
+    
+    def _move_row(self, from_index, to_index):
+        # Convert visual indices to model indices
+        from_model = self.table.convertRowIndexToModel(from_index)
+        to_model = self.table.convertRowIndexToModel(to_index)
+        
+        # Save user edits before moving
+        self.extender._save_table_edits()
+        
+        # Get the actual request indices from the mapping
+        if (hasattr(self.extender, '_display_to_request_map') and 
+            from_model < len(self.extender._display_to_request_map) and 
+            to_model < len(self.extender._display_to_request_map)):
+            
+            actual_from_index = self.extender._display_to_request_map[from_model]
+            actual_to_index = self.extender._display_to_request_map[to_model]
+            
+            # Move the request in the actual requests list
+            if (actual_from_index < len(self.extender.requests) and 
+                actual_to_index < len(self.extender.requests)):
+                
+                # Remove from current position and insert at new position
+                request_to_move = self.extender.requests[actual_from_index]
+                
+                # Remove from current position
+                self.extender.requests.pop(actual_from_index)
+                
+                # Calculate new position in the actual requests list
+                # We need to find where the target row actually maps to
+                new_position = actual_to_index
+                
+                # If moving down, adjust position
+                if actual_from_index < actual_to_index:
+                    new_position = actual_to_index
+                else:
+                    new_position = actual_to_index
+                
+                # Insert at new position
+                self.extender.requests.insert(new_position, request_to_move)
+                
+                # Update the display mapping and refresh
+                self.extender._update_display_after_reorder()
+                
+                # Select the moved row
+                self.table.clearSelection()
+                visual_target_row = -1
+                
+                # Find the visual row that corresponds to the moved request
+                for visual_row in range(self.table.getRowCount()):
+                    model_row = self.table.convertRowIndexToModel(visual_row)
+                    if (model_row < len(self.extender._display_to_request_map) and 
+                        self.extender._display_to_request_map[model_row] == new_position):
+                        visual_target_row = visual_row
+                        break
+                
+                if visual_target_row >= 0:
+                    self.table.addRowSelectionInterval(visual_target_row, visual_target_row)
+
 
 class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditorController
     def __init__(self):
@@ -289,6 +435,83 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             'exclude': ['.css', '.png', '.jpg', '.jpeg', '.gif', '.ico', '.woff', '.woff2', '.ttf', '.svg']
         }
         }
+
+    def _setup_keyboard_shortcuts(self):
+        """Setup keyboard shortcuts for the table"""
+        # Create input map and action map for keyboard shortcuts
+        input_map = self.log_table.getInputMap(JTable.WHEN_ANCESTOR_OF_FOCUSED_COMPONENT)
+        action_map = self.log_table.getActionMap()
+        
+        # Ctrl+R - Send to Repeater
+        input_map.put(self._get_keystroke("ctrl R"), "sendToRepeater")
+        action_map.put("sendToRepeater", self._create_key_action(lambda: self._view_in_repeater()))
+        
+        # Ctrl+C - Copy selected rows
+        input_map.put(self._get_keystroke("ctrl C"), "copyRows")
+        action_map.put("copyRows", self._create_key_action(lambda: self._copy_selected()))
+        
+        # Tab - Move to next row (same column)
+        input_map.put(self._get_keystroke("TAB"), "tabNextRow")
+        action_map.put("tabNextRow", self._create_key_action(lambda: self._tab_to_next_row()))
+        
+        # Shift+Tab - Move to previous row (same column)
+        input_map.put(self._get_keystroke("shift TAB"), "tabPrevRow")
+        action_map.put("tabPrevRow", self._create_key_action(lambda: self._tab_to_previous_row()))
+
+    def _get_keystroke(self, key_string):
+        """Helper to create keystroke from string"""
+        from javax.swing import KeyStroke
+        return KeyStroke.getKeyStroke(key_string)
+
+    def _create_key_action(self, action_function):
+        """Helper to create action from function"""
+        from javax.swing import AbstractAction
+        class KeyAction(AbstractAction):
+            def __init__(self, function):
+                super(KeyAction, self).__init__()
+                self.function = function
+            def actionPerformed(self, event):
+                self.function()
+        return KeyAction(action_function)
+
+    def _tab_to_next_row(self):
+        """Move to next row when Tab is pressed in editable cells"""
+        selected_rows = self.log_table.getSelectedRows()
+        if not selected_rows:
+            return
+        
+        current_row = selected_rows[0]
+        current_col = self.log_table.getSelectedColumn()
+        
+        # If we're not on the last row, move to next row
+        if current_row < self.log_table.getRowCount() - 1:
+            next_row = current_row + 1
+            self.log_table.clearSelection()
+            self.log_table.setRowSelectionInterval(next_row, next_row)
+            self.log_table.setColumnSelectionInterval(current_col, current_col)
+            
+            # Ensure the new row is visible
+            self.log_table.scrollRectToVisible(self.log_table.getCellRect(next_row, current_col, True))
+
+    def _tab_to_previous_row(self):
+        """Move to previous row when Shift+Tab is pressed in editable cells"""
+        selected_rows = self.log_table.getSelectedRows()
+        if not selected_rows:
+            return
+        
+        current_row = selected_rows[0]
+        current_col = self.log_table.getSelectedColumn()
+        
+        # If we're not on the first row, move to previous row
+        if current_row > 0:
+            prev_row = current_row - 1
+            self.log_table.clearSelection()
+            self.log_table.setRowSelectionInterval(prev_row, prev_row)
+            self.log_table.setColumnSelectionInterval(current_col, current_col)
+            
+            # Ensure the new row is visible
+            self.log_table.scrollRectToVisible(self.log_table.getCellRect(prev_row, current_col, True))
+
 
     def registerExtenderCallbacks(self, callbacks):
         # Force UTF-8 encoding for Japanese text support
@@ -359,8 +582,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         
         column_names = [
             "No.", "Screen Name", "Screen URL", "Button Name", 
-            "Method", "Transition URL", "Params", "Status", "Length"
+            "Method", "Transition URL", "Params", "Status", "Length", "Remarks"
         ]
+        self.log_model = DefaultTableModel()
+        self.log_model.setColumnIdentifiers(column_names)
+        self.log_table = JTable(self.log_model)
         self.log_model = DefaultTableModel()
         self.log_model.setColumnIdentifiers(column_names)
         self.log_table = JTable(self.log_model)
@@ -368,7 +594,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         # Initialize renderer
         self.highlight_renderer = HighlightRenderer()
         self.log_table.setDefaultRenderer(Object, self.highlight_renderer)
-        
+        self._setup_keyboard_shortcuts()
+
         # SET COLUMN WIDTHS
         column_model = self.log_table.getColumnModel()
         
@@ -382,6 +609,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         column_model.getColumn(6).setPreferredWidth(60)   # Params - Small
         column_model.getColumn(7).setPreferredWidth(80)   # Status - Small
         column_model.getColumn(8).setPreferredWidth(60)   # Length - Small
+        column_model.getColumn(9).setPreferredWidth(100)
         
         # Make the table auto-resize to fit the container
         self.log_table.setAutoResizeMode(JTable.AUTO_RESIZE_ALL_COLUMNS)
@@ -390,6 +618,11 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         copy_mouse_listener = CopyButtonMouseListener(self)
         self.log_table.addMouseMotionListener(copy_mouse_listener)
         self.log_table.addMouseListener(copy_mouse_listener)
+        
+        # ADD DRAG AND DROP FUNCTIONALITY - ADD THESE LINES
+        drag_drop_listener = TableDragDropListener(self, self.log_table)
+        self.log_table.addMouseListener(drag_drop_listener)
+        self.log_table.addMouseMotionListener(drag_drop_listener)
         
         # Set Burp Suite style selection colors
         self.log_table.setShowGrid(True)
@@ -402,6 +635,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         self._setup_control_buttons()
         self._make_selection_more_visible()
         self._setup_persistent_selection()
+
+        # ... rest of your existing _init_ui_components code ...
 
         # Rest of your existing code...
         self._message_controller = MessageEditorController(self)
@@ -432,7 +667,22 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             DefaultCellEditor(JTextField()))
         self.log_table.getColumnModel().getColumn(4).setCellEditor(  # Method
             DefaultCellEditor(JTextField()))
+        self.log_table.getColumnModel().getColumn(9).setCellEditor(  # YOUR_NEW_COLUMN
+            DefaultCellEditor(JTextField()))
+
+
+    def _update_display_after_reorder(self):
+        """Update display after drag and drop reordering"""
+        # Rebuild the display mapping based on current requests order
+        self._display_to_request_map = list(range(len(self.requests)))
         
+        # Update the table display
+        self._update_display()
+        
+        # Show brief status message
+        self.status_label.setText("Row order updated - drag & drop applied")
+
+
     def _handle_row_selection(self, event):
         """Show request/response details when a row is selected"""
         if event.getValueIsAdjusting():
@@ -481,7 +731,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             self._response_viewer.setMessage(bytearray(), False)
 
     def _save_table_edits(self):
-        """Save user edits from the table back to the requests data"""
+        """Save user edits from the table back to the requests data with proper encoding"""
         if not hasattr(self, '_display_to_request_map'):
             return
             
@@ -489,18 +739,48 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             if row < len(self._display_to_request_map):
                 actual_index = self._display_to_request_map[row]
                 if actual_index < len(self.requests):
-                    # Get values from table model
+                    # Get values from table model and preserve Japanese text
                     screen_name = self.log_model.getValueAt(row, 1)  # Column 1: Screen Name
                     screen_url = self.log_model.getValueAt(row, 2)   # Column 2: Screen URL  
                     button_name = self.log_model.getValueAt(row, 3)  # Column 3: Button Name
+                    new_field_value = self.log_model.getValueAt(row, 9)
                     
-                    # Save to actual request data - keep as is
+                    if new_field_value is not None:
+                        try:
+                            if isinstance(new_field_value, unicode):
+                                self.requests[actual_index]['YOUR_NEW_FIELD'] = new_field_value.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['YOUR_NEW_FIELD'] = str(new_field_value)
+                        except:
+                            self.requests[actual_index]['YOUR_NEW_FIELD'] = str(new_field_value)                    
+
+                    # Save to actual request data with proper encoding handling
                     if screen_name is not None:
-                        self.requests[actual_index]['screen_name'] = screen_name
+                        try:
+                            if isinstance(screen_name, unicode):
+                                self.requests[actual_index]['screen_name'] = screen_name.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['screen_name'] = str(screen_name)
+                        except:
+                            self.requests[actual_index]['screen_name'] = str(screen_name)
+                    
                     if screen_url is not None:
-                        self.requests[actual_index]['screen_url'] = screen_url
+                        try:
+                            if isinstance(screen_url, unicode):
+                                self.requests[actual_index]['screen_url'] = screen_url.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['screen_url'] = str(screen_url)
+                        except:
+                            self.requests[actual_index]['screen_url'] = str(screen_url)
+                    
                     if button_name is not None:
-                        self.requests[actual_index]['button_name'] = button_name
+                        try:
+                            if isinstance(button_name, unicode):
+                                self.requests[actual_index]['button_name'] = button_name.encode('utf-8')
+                            else:
+                                self.requests[actual_index]['button_name'] = str(button_name)
+                        except:
+                            self.requests[actual_index]['button_name'] = str(button_name)
 
 
     def _refresh_display(self, event=None):
@@ -527,8 +807,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
     def _setup_context_menu(self):
         self.popup_menu = JPopupMenu()
         
-        # Send to Repeater
-        send_to_repeater_item = JMenuItem("Send to Repeater")
+        # Send to Repeater with shortcut hint
+        send_to_repeater_item = JMenuItem("Send to Repeater (Ctrl+R)")
         send_to_repeater_item.addActionListener(lambda e: self._view_in_repeater())
         self.popup_menu.add(send_to_repeater_item)
         
@@ -560,8 +840,8 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
         # Add separator
         self.popup_menu.addSeparator()
         
-        # Copy
-        copy_item = JMenuItem("Copy")
+        # Copy with shortcut hint
+        copy_item = JMenuItem("Copy (Ctrl+C)")
         copy_item.addActionListener(lambda e: self._copy_selected())
         self.popup_menu.add(copy_item)
         
@@ -649,14 +929,14 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             try:
                 url = req['messageInfo'].getUrl()
                 if not self._check_custom_scope(url):
-                    continue  # Skip if not in scope
+                    continue
             except:
                 # If URL can't be parsed, skip this request
                 continue
                 
             # Check file extension filters
             if not self._should_display(req):
-                continue  # Skip if filtered by extension
+                continue
                 
             # If we get here, the request passed both filters
             filtered_requests.append(req)
@@ -685,15 +965,15 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 file_path += '.csv'
             
             try:
-                # Use UTF-8 encoding for CSV file to support Japanese
+                # Use UTF-8 with BOM for Excel compatibility with Japanese
                 import codecs
-                with codecs.open(file_path, 'w', encoding='utf-8-sig') as csvfile:  # utf-8-sig for Excel compatibility
+                with codecs.open(file_path, 'w', encoding='utf-8-sig') as csvfile:
                     writer = csv.writer(csvfile)
                     
                     # Write headers
                     headers = [
                         "No.", "Screen Name", "Screen URL", "Button Name", 
-                        "Method", "Transition URL", "Params", "Status", "Length"
+                        "Method", "Transition URL", "Params", "Status", "Length", "Remarks"  # ADD HERE
                     ]
                     writer.writerow(headers)
                     
@@ -702,16 +982,24 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                         row_data = []
                         for col in range(self.log_model.getColumnCount()):
                             value = self.log_model.getValueAt(row, col)
-                            # Handle encoding for Japanese export
+                            # Handle Japanese characters properly
                             if value is not None:
                                 try:
-                                    # Ensure proper encoding for Japanese characters
-                                    if isinstance(value, str):
-                                        row_data.append(value)
+                                    # If it's unicode, encode properly
+                                    if isinstance(value, unicode):
+                                        # Convert to UTF-8 encoded string
+                                        row_data.append(value.encode('utf-8'))
                                     else:
-                                        row_data.append(str(value))
-                                except:
-                                    row_data.append("[Encoding Error]")
+                                        # Convert to string and handle encoding
+                                        str_value = str(value)
+                                        # Ensure it's properly encoded
+                                        row_data.append(str_value.decode('utf-8').encode('utf-8') if isinstance(str_value, str) else str_value)
+                                except Exception as e:
+                                    # Fallback: use string representation
+                                    try:
+                                        row_data.append(str(value).encode('utf-8'))
+                                    except:
+                                        row_data.append("[Encoding Error]")
                             else:
                                 row_data.append("")
                         writer.writerow(row_data)
@@ -793,6 +1081,9 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             
             self.requests = new_requests
             
+            # Reset the display mapping after deletion
+            self._display_to_request_map = list(range(len(self.requests)))
+            
             # Migrate highlights
             self.highlight_renderer.migrateHighlights(old_to_new_map)
             
@@ -811,7 +1102,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 "Delete Successful",
                 JOptionPane.INFORMATION_MESSAGE
             )
-
 
     def _toggle_highlight(self, event=None):
         selected_rows = [self.log_table.convertRowIndexToModel(i) 
@@ -907,17 +1197,35 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
 
     def _copy_selected(self, event=None):
         selected_rows = [self.log_table.convertRowIndexToModel(i) 
-                    for i in self.log_table.getSelectedRows()]
+                        for i in self.log_table.getSelectedRows()]
         if not selected_rows:
             return
 
         try:
             clipboard_data = []
+            
+            # Add headers if multiple rows are selected
+            if len(selected_rows) > 1:
+                headers = []
+                for col in range(self.log_model.getColumnCount()):
+                    headers.append(str(self.log_model.getColumnName(col)))
+                clipboard_data.append("\t".join(headers))
+            
             for row in selected_rows:
                 row_data = []
                 for col in range(self.log_model.getColumnCount()):
                     value = self.log_model.getValueAt(row, col)
-                    row_data.append(str(value) if value is not None else "")
+                    # Handle Japanese text properly
+                    if value is not None:
+                        try:
+                            if isinstance(value, unicode):
+                                row_data.append(value.encode('utf-8'))
+                            else:
+                                row_data.append(str(value))
+                        except:
+                            row_data.append(str(value) if value is not None else "")
+                    else:
+                        row_data.append("")
                 clipboard_data.append("\t".join(row_data))
 
             from java.awt import Toolkit
@@ -926,12 +1234,23 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             clipboard = toolkit.getSystemClipboard()
             clipboard.setContents(StringSelection("\n".join(clipboard_data)), None)
 
-            JOptionPane.showMessageDialog(
-                None,
-                "Copied {} rows to clipboard.".format(len(selected_rows)),
-                "Copy Successful",
-                JOptionPane.INFORMATION_MESSAGE
-            )
+            # Show appropriate message based on number of rows copied
+            if len(selected_rows) == 1:
+                message = "Copied 1 row to clipboard."
+            else:
+                message = "Copied {} rows to clipboard (with headers).".format(len(selected_rows))
+                
+            # Show brief status instead of dialog to avoid interruption
+            self.status_label.setText(message)
+            
+            # Auto-clear the status after 3 seconds
+            def clear_status():
+                self._update_status()
+                
+            timer = Timer(3000, lambda e: clear_status())
+            timer.setRepeats(False)
+            timer.start()
+
         except Exception as e:
             JOptionPane.showMessageDialog(
                 None,
@@ -965,6 +1284,10 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             # Store current scroll position
             scroll_position = None
             selected_row_rect = None
+            
+            # Check if we have a custom order (from drag & drop)
+            has_custom_order = (hasattr(self, '_display_to_request_map') and 
+                            len(self._display_to_request_map) == len(self.requests))
             
             if hasattr(self, '_display_to_request_map') and self.log_table.getRowCount() > 0:
                 # Store selected rows by their request number (the value in column 0)
@@ -1021,7 +1344,16 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             display_requests = []
             seen_requests_set = set()
 
-            for req_index, req in enumerate(self.requests):
+            # Use custom order if available from drag & drop, otherwise use original order
+            request_indices = (self._display_to_request_map if has_custom_order 
+                            else range(len(self.requests)))
+
+            for req_index in request_indices:
+                if req_index >= len(self.requests):
+                    continue
+                    
+                req = self.requests[req_index]
+                
                 # Check scope
                 try:
                     url = req['messageInfo'].getUrl()
@@ -1033,6 +1365,7 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 # Check file extension filters
                 if not self._should_display(req):
                     continue
+                    
                 if self._hide_duplicates:
                     actual_url = req['messageInfo'].getUrl().toString()
                     method = req['method']
@@ -1082,17 +1415,34 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                     elif status_code >= 400:
                         status = "%s (Error)" % status_code
 
-                # Simple approach - just use the values as they are
+                # Handle Japanese text properly - don't re-encode if already unicode
+                def safe_get_value(value, default=""):
+                    if value is None:
+                        return default
+                    try:
+                        # If it's already unicode, return as is
+                        if isinstance(value, unicode):
+                            return value
+                        # If it's a string, decode from UTF-8
+                        elif isinstance(value, str):
+                            return value.decode('utf-8')
+                        # Otherwise convert to string
+                        else:
+                            return unicode(str(value))
+                    except:
+                        return unicode(str(default))
+
                 row_data = [
-                    display_number,
-                    req.get('screen_name', ""),
-                    req.get('screen_url', ""),
-                    req.get('button_name', ""),
-                    method,
-                    req.get('transition_url', ""),
-                    req.get('params', 0),
-                    status,
-                    req.get('length', 0)
+                    safe_get_value(display_number),
+                    safe_get_value(req.get('screen_name', "")),
+                    safe_get_value(req.get('screen_url', "")),
+                    safe_get_value(req.get('button_name', "")),
+                    safe_get_value(method),
+                    safe_get_value(req.get('transition_url', "")),
+                    safe_get_value(req.get('params', 0)),
+                    safe_get_value(status),
+                    safe_get_value(req.get('length', 0)),
+                    safe_get_value(req.get('YOUR_NEW_FIELD', ""))  # Add this line
                 ]
                 
                 # Update or add row
@@ -1168,21 +1518,6 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
                 self.log_model.setValueAt("{} of {}".format(screen_num, self._screen_map[screen_num]), row, 1)
 
 
-    def _renumber_requests(self):
-        """Renumber requests after deletions"""
-        # First renumber all requests sequentially
-        for i, req in enumerate(self.requests, 1):
-            req['number'] = i
-        
-        # Then update branch numbers
-        self._screen_map = {}
-        for row in range(self.log_model.getRowCount()):
-            branch_info = str(self.log_model.getValueAt(row, 1))
-            if " of " in branch_info:
-                screen_num, branch_num = map(int, branch_info.split(" of "))
-                self._screen_map[screen_num] = self._screen_map.get(screen_num, 0) + 1
-                self.log_model.setValueAt("{} of {}".format(screen_num, self._screen_map[screen_num]), row, 1)
-
     def processHttpMessage(self, toolFlag, messageIsRequest, messageInfo):
         # First check if the URL is in scope
         url = messageInfo.getUrl()
@@ -1199,23 +1534,37 @@ class BurpExtender(IBurpExtender, IHttpListener, ITab):  # Remove IMessageEditor
             analyzed = self._helpers.analyzeRequest(messageInfo)
             url_str = url.toString()
             
-            # Initialize with empty Japanese-compatible strings
-            screen_name = ""
-            button_name = ""
-            
+            # Create the entry first
             entry = {
                 'number': len(self.requests) + 1,
-                'screen_name': screen_name,
                 'screen_url': "",
-                'button_name': button_name,
+                'button_name': "",
                 'method': analyzed.getMethod(),
                 'transition_url': url_str,
                 'params': self._get_parameters_count(analyzed),
                 'status': "Pending",
                 'length': 0,
+                'YOUR_NEW_FIELD': "",  # Add this line with default value
                 'messageInfo': messageInfo,
                 'request_hash': hash(messageInfo.getRequest().tostring())
             }
+            
+            # Ensure Japanese text is handled properly
+            screen_name = entry.get('screen_name', '')
+            button_name = entry.get('button_name', '')
+            
+            # If these are strings, ensure they're properly encoded
+            if isinstance(screen_name, str):
+                try:
+                    entry['screen_name'] = screen_name.decode('utf-8')
+                except:
+                    pass
+            if isinstance(button_name, str):
+                try:
+                    entry['button_name'] = button_name.decode('utf-8')
+                except:
+                    pass
+            
             self.requests.append(entry)
             
             # Update status immediately
