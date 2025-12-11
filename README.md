@@ -61,7 +61,4 @@ A Burp Suite extension to log and analyze web application flows, including scree
 <img width="871" height="1042" alt="image" src="https://github.com/user-attachments/assets/9f7e120c-2175-49d0-9eca-1a41c94e6a4e" />
 
 
-## License
-MIT License - See [LICENSE](LICENSE) file.
-
 ---
