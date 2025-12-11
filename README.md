@@ -2,8 +2,7 @@
 
 A Burp Suite extension to log and analyze web application flows, including screen transitions, parameters, and request/response details.
 
-<img width="1024" height="535" alt="image" src="https://github.com/user-attachments/assets/34855f8c-6d83-4d7c-926f-cd30da1c7776" />
-
+<img width="200" height="200" alt="Gemini_Generated_Image_rir305rir305rir3" src="https://github.com/user-attachments/assets/af08c0ba-4f53-41fa-b7dd-0f086c96c611" />
 
 ## Features
 - Logs requests/responses with metadata (URL, method, params, status codes)
