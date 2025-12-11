@@ -1,8 +1,8 @@
-# Site Survey Logger - Burp Suite Extension
+# Metsuke - Burp Suite Extension
 
 A Burp Suite extension to log and analyze web application flows, including screen transitions, parameters, and request/response details.
 
-[Screenshot coming up later]
+<img width="871" height="1042" alt="image" src="https://github.com/user-attachments/assets/9f7e120c-2175-49d0-9eca-1a41c94e6a4e" />
 
 ## Features
 - Logs requests/responses with metadata (URL, method, params, status codes)
@@ -25,13 +25,13 @@ A Burp Suite extension to log and analyze web application flows, including scree
    → Set path to the downloaded Jython JAR file
 
 ### Step 2: Load the Extension
-1. Download `sitesurvey.v2.py` from this repository
+1. Download `metsuke.py` from this repository
 2. In Burp Suite:  
    `Extensions` → `Add`  
    → Select `Python` as type → Choose the downloaded `.py` file
 
 ## Usage
-1. After loading, a new tab **"Site Survey Pro"** will appear
+1. After loading, a new tab **"Metsuke"** will appear
 2. Browse your target application while Burp proxies traffic
 3. Use the interface to:
    - Filter requests by scope/extensions
