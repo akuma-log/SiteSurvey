@@ -2,7 +2,8 @@
 
 A Burp Suite extension to log and analyze web application flows, including screen transitions, parameters, and request/response details.
 
-<img width="871" height="1042" alt="image" src="https://github.com/user-attachments/assets/9f7e120c-2175-49d0-9eca-1a41c94e6a4e" />
+<img width="1024" height="535" alt="image" src="https://github.com/user-attachments/assets/34855f8c-6d83-4d7c-926f-cd30da1c7776" />
+
 
 ## Features
 - Logs requests/responses with metadata (URL, method, params, status codes)
@@ -56,6 +57,9 @@ A Burp Suite extension to log and analyze web application flows, including scree
 #### Disable Browser Cache for better performance
    - you can disable the cache in Firefox by going to `about:config` and setting `network.http.use-cache` to false, but this can negatively impact performance. A better alternative for most users is to use a keyboard shortcut to bypass the cache when needed, such as `Shift + Click` the Reload button or `Ctrl+F5`, which forces a fresh download for that specific page without permanently disabling caching. For permanent disabling, you can set `network.http.use-cache` to false in `about:config`, or clear the cache automatically when you close Firefox in the settings.
 
+### Design
+
+<img width="871" height="1042" alt="image" src="https://github.com/user-attachments/assets/9f7e120c-2175-49d0-9eca-1a41c94e6a4e" />
 
 
 ## License
